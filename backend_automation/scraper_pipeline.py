@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import urllib3
 from datetime import date
 from typing import List, Dict, Any
@@ -14,6 +15,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+}
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set')
@@ -43,15 +50,12 @@ def normalize_organization(text: str) -> str:
 
 def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
     
     try:
         response = requests.get(
             'https://www.sarkariresult.com/',
-            headers=headers,
-            timeout=30,
+            headers=HEADERS,
+            timeout=15,
             verify=True
         )
         response.raise_for_status()
@@ -76,15 +80,12 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
 
 def scrape_sarkari_exams() -> List[Dict[str, Any]]:
     jobs = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
     
     try:
         response = requests.get(
             'https://www.sarkariexams.com/',
-            headers=headers,
-            timeout=30,
+            headers=HEADERS,
+            timeout=15,
             verify=False
         )
         response.raise_for_status()
@@ -152,6 +153,7 @@ Output format:
         except Exception as e:
             print(f'Gemini processing error: {type(e).__name__}: {e}')
     
+    time.sleep(1)
     return processed_jobs
 
 def insert_job(job: Dict[str, Any]) -> bool:
@@ -199,7 +201,10 @@ def cleanup_expired_jobs() -> int:
 def main():
     print('Starting Sarkari Jobs pipeline...')
     
-    all_jobs = scrape_sarkari_result() + scrape_sarkari_exams()
+    all_jobs = scrape_sarkari_result()
+    time.sleep(2)
+    all_jobs += scrape_sarkari_exams()
+    
     print(f'Total scraped: {len(all_jobs)} listings')
     
     if not all_jobs:
