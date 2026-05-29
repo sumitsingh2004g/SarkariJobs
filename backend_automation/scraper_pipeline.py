@@ -6,6 +6,12 @@ from datetime import date
 from typing import List, Dict, Any
 
 import requests
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 import google.generativeai as genai
@@ -19,7 +25,8 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": "https://www.google.com/"
 }
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -38,6 +45,11 @@ ORGANIZATION_MAPPING = {
     'Defence': ['defence', 'nda', 'cds', 'navy', 'army', 'air force']
 }
 
+def create_scraper():
+    if CLOUDSCRAPER_AVAILABLE:
+        return cloudscraper.create_scraper()
+    return requests.Session()
+
 def normalize_organization(text: str) -> str:
     if not text:
         return 'Other'
@@ -50,61 +62,82 @@ def normalize_organization(text: str) -> str:
 
 def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
+    scraper = create_scraper()
     
-    try:
-        response = requests.get(
-            'https://www.sarkariresult.com/',
-            headers=HEADERS,
-            timeout=15,
-            verify=True
-        )
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for div in soup.find_all('div', class_='post-title'):
-            link = div.find('a', href=True)
-            if link:
-                title = link.get_text(strip=True)
-                href = link['href']
-                if title and len(title) >= 10:
-                    jobs.append({
-                        'title': title,
-                        'raw_content': f'Title: {title}\nLink: {href}',
-                        'link': href
-                    })
-        print(f'sarkariresult.com: Found {len(jobs)} listings')
-    except Exception as e:
-        print(f'sarkariresult.com error: {type(e).__name__}: {e}')
+    urls_to_try = [
+        'https://www.sarkariresult.com/',
+        'https://sarkariresult.com/',
+    ]
+    
+    for url in urls_to_try:
+        try:
+            if CLOUDSCRAPER_AVAILABLE:
+                response = scraper.get(url, timeout=15)
+            else:
+                response = requests.get(url, headers=HEADERS, timeout=15, verify=True)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            for div in soup.find_all(['div', 'li', 'td']):
+                link = div.find('a', href=True)
+                if link:
+                    title = link.get_text(strip=True)
+                    href = link['href']
+                    if title and len(title) >= 10:
+                        keywords = ['recruitment', 'vacancy', 'notification', 'exam', 'online', 'apply']
+                        if any(k in title.lower() or k in div.get_text(strip=True).lower() for k in keywords):
+                            full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
+                            jobs.append({
+                                'title': title,
+                                'raw_content': f'Title: {title}\nLink: {full_url}',
+                                'link': full_url
+                            })
+            print(f'sarkariresult.com ({url}): Found {len(jobs)} listings')
+            if jobs:
+                return jobs[:10]
+        except Exception as e:
+            print(f'sarkariresult.com ({url}) error: {type(e).__name__}: {e}')
+        time.sleep(2)
     
     return jobs[:10]
 
 def scrape_sarkari_exams() -> List[Dict[str, Any]]:
     jobs = []
+    scraper = create_scraper()
     
-    try:
-        response = requests.get(
-            'https://www.sarkariexams.com/',
-            headers=HEADERS,
-            timeout=15,
-            verify=False
-        )
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for item in soup.find_all(['h2', 'h3']):
-            text = item.get_text(strip=True)
-            link = item.find('a', href=True)
-            href = link['href'] if link else ''
+    urls_to_try = [
+        'https://www.sarkariexams.com/',
+        'https://sarkariexams.com/',
+    ]
+    
+    for url in urls_to_try:
+        try:
+            if CLOUDSCRAPER_AVAILABLE:
+                response = scraper.get(url, timeout=15)
+            else:
+                response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            if text and len(text) >= 15 and any(k in text.lower() for k in ['recruitment', 'vacancy', 'exam', '2024', '2025', '2026']):
-                jobs.append({
-                    'title': text,
-                    'raw_content': f'Title: {text}\nLink: {href}',
-                    'link': href
-                })
-        print(f'sarkariexams.com: Found {len(jobs)} listings')
-    except Exception as e:
-        print(f'sarkariexams.com error: {type(e).__name__}: {e}')
+            for item in soup.find_all(['h2', 'h3', 'div', 'li']):
+                text = item.get_text(strip=True)
+                link = item.find('a', href=True)
+                href = link['href'] if link else ''
+                
+                if text and len(text) >= 15:
+                    keywords = ['recruitment', 'vacancy', 'exam', '2024', '2025', '2026', 'apply', 'notification']
+                    if any(k in text.lower() for k in keywords):
+                        jobs.append({
+                            'title': text,
+                            'raw_content': f'Title: {text}\nLink: {href}',
+                            'link': href
+                        })
+            print(f'sarkariexams.com ({url}): Found {len(jobs)} listings')
+            if jobs:
+                return jobs[:10]
+        except Exception as e:
+            print(f'sarkariexams.com ({url}) error: {type(e).__name__}: {e}')
+        time.sleep(2)
     
     return jobs[:10]
 
@@ -126,7 +159,7 @@ Output format:
   "last_date": "YYYY-MM-DD mandatory",
   "fee_details": "application fees or 'As per official notification'",
   "eligibility": "age and education requirements",
-  "official_apply_link": "URL or {job['link']}"
+  "official_apply_link": "URL"
 }}"""
         
         try:
@@ -152,8 +185,9 @@ Output format:
             print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
         except Exception as e:
             print(f'Gemini processing error: {type(e).__name__}: {e}')
+        
+        time.sleep(1)
     
-    time.sleep(1)
     return processed_jobs
 
 def insert_job(job: Dict[str, Any]) -> bool:
