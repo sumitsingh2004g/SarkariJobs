@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import urllib3
 from datetime import date
@@ -43,9 +44,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ORGANIZATION_MAPPING = {
     'SSC': ['ssc', 'staff selection commission'],
     'UPSC': ['upsc', 'union public service commission'],
-    'Railways': ['railway', 'rpf', 'rrb', 'railway'],
+    'Railways': ['railway', 'rpf', 'rrb'],
     'Banking': ['bank', 'ibps', 'sbi', 'po'],
-    'Defence': ['defence', 'nda', 'cds', 'navy', 'army', 'air force']
+    'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
 }
 
 def create_scraper():
@@ -65,128 +66,50 @@ def normalize_organization(text: str) -> str:
                 return org
     return 'Other'
 
-def scrape_sarkari_result_rss() -> List[Dict[str, Any]]:
-    jobs = []
-    
-    scraper = create_scraper()
-    rss_urls = [
-        'https://www.sarkariresult.com/rss.php',
-        'https://rss.sarkariresult.com/latestjobs',
-        'https://www.sarkariresult.com/feed'
-    ]
-    
-    for rss_url in rss_urls:
-        try:
-            if CLOUDSCRAPER_AVAILABLE:
-                response = scraper.get(rss_url, timeout=15)
-            else:
-                response = requests.get(rss_url, headers=HEADERS, timeout=15)
-            
-            print(f'sarkariresult RSS ({rss_url}): Status {response.status_code}')
-            
-            if response.status_code == 200:
-                try:
-                    root = ET.fromstring(response.content)
-                    ns = {'rss': 'http://purl.org/dc/elements/1.1/'}
-                    
-                    for item in root.iter():
-                        if item.tag.endswith('item'):
-                            title_elem = item.find('title')
-                            link_elem = item.find('link')
-                            if title_elem and link_elem:
-                                title = title_elem.text or ''
-                                link = link_elem.text or ''
-                                if title and len(title) >= 10:
-                                    jobs.append({
-                                        'title': title,
-                                        'raw_content': f'Title: {title}\nLink: {link}',
-                                        'link': link
-                                    })
-                    
-                    for item in root.iter():
-                        if item.tag.endswith('item'):
-                            title = item.text or '' if isinstance(item.text, str) else ''
-                            for child in item:
-                                if child.tag.endswith('title') and child.text:
-                                    jobs.append({
-                                        'title': child.text,
-                                        'raw_content': f'Title: {child.text}\nLink: {item.find("link").text if item.find("link") is not None else ""}',
-                                        'link': item.find("link").text if item.find("link") is not None else ""
-                                    })
-                    
-                    print(f'sarkariresult RSS: Found {len(jobs)} items')
-                    if jobs:
-                        return jobs[:15]
-                except ET.ParseError:
-                    pass
-        except Exception as e:
-            print(f'sarkariresult RSS ({rss_url}) error: {type(e).__name__}: {e}')
-        time.sleep(2)
-    
-    return jobs[:15]
-
-def scrape_sarkari_result_html() -> List[Dict[str, Any]]:
+def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
     scraper = create_scraper()
     
-    for url in ['https://www.sarkariresult.com/', 'https://sarkariresult.com/']:
-        try:
-            if CLOUDSCRAPER_AVAILABLE:
-                response = scraper.get(url, timeout=15)
-            else:
-                response = requests.get(url, headers=HEADERS, timeout=15)
-            
-            print(f'sarkariresult HTML ({url}): Status {response.status_code}')
-            
-            if response.status_code != 200:
-                continue
-                
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            for div in soup.find_all('div', class_=lambda x: x and 'latestjob' in str(x).lower()):
-                for link in div.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {link["href"]}',
-                            'link': link['href']
-                        })
-            
-            for div in soup.find_all(['div', 'section'], id=lambda x: x and ('post' in str(x).lower() or 'content' in str(x).lower())):
-                for link in div.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {link["href"]}',
-                            'link': link['href']
-                        })
-            
-            for tr in soup.find_all('tr'):
-                for link in tr.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {link["href"]}',
-                            'link': link['href']
-                        })
-            
-            print(f'sarkariresult HTML: Found {len(jobs)} listings')
-            if jobs:
-                return jobs[:15]
-        except Exception as e:
-            print(f'sarkariresult HTML ({url}) error: {type(e).__name__}: {e}')
-        time.sleep(2)
+    rss_url = 'https://www.sarkariresult.com/rss.php'
+    try:
+        if CLOUDSCRAPER_AVAILABLE:
+            response = scraper.get(rss_url, timeout=15)
+        else:
+            response = requests.get(rss_url, headers=HEADERS, timeout=15)
+        
+        print(f'sarkariresult RSS ({rss_url}): Status {response.status_code}')
+        
+        if response.status_code == 200:
+            try:
+                root = ET.fromstring(response.content)
+                for item in root.findall('.//item'):
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+                    if title_elem is not None and link_elem is not None:
+                        title = title_elem.text or ''
+                        link = link_elem.text or ''
+                        if title and len(title) >= 10:
+                            jobs.append({
+                                'title': title,
+                                'raw_content': f'Title: {title}\nLink: {link}',
+                                'link': link
+                            })
+                print(f'sarkariresult RSS: Found {len(jobs)} items')
+                return jobs[:20]
+            except ET.ParseError as e:
+                print(f'sarkariresult RSS parse error: {e}')
+    except Exception as e:
+        print(f'sarkariresult RSS error: {type(e).__name__}: {e}')
     
-    return jobs[:15]
+    return jobs[:20]
 
 def scrape_freejobalert() -> List[Dict[str, Any]]:
     jobs = []
     scraper = create_scraper()
     
-    for url in ['https://www.freejobalert.com/', 'https://freejobalert.com/']:
+    urls = ['https://www.freejobalert.com/', 'https://freejobalert.com/']
+    
+    for url in urls:
         try:
             if CLOUDSCRAPER_AVAILABLE:
                 response = scraper.get(url, timeout=15)
@@ -197,51 +120,58 @@ def scrape_freejobalert() -> List[Dict[str, Any]]:
             
             if response.status_code != 200:
                 continue
-                
+            
             soup = BeautifulSoup(response.text, 'html.parser')
             
             for tr in soup.find_all('tr'):
-                tr_text = tr.get_text().lower()
-                if any(k in tr_text for k in ['recruitment', 'vacancy', 'notification', '2024', '2025', '2026', 'apply']):
-                    for link in tr.find_all('a', href=True):
-                        title = link.get_text(strip=True)
-                        if title and len(title) >= 15:
-                            href = link['href']
-                            full_url = href if href.startswith('http') else f'https://freejobalert.com{href}'
-                            jobs.append({
-                                'title': title,
-                                'raw_content': f'Title: {title}\nLink: {full_url}',
-                                'link': full_url
-                            })
+                cells = tr.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    row_text = tr.get_text()
+                    if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'vacancies', 'apply', '2024', '2025', '2026', 'notification']):
+                        link = tr.find('a', href=True)
+                        if link:
+                            title = link.get_text(strip=True)
+                            if title and len(title) >= 10:
+                                href = link['href']
+                                full_url = href if href.startswith('http') else f'https://freejobalert.com{href}'
+                                jobs.append({
+                                    'title': title,
+                                    'raw_content': f'Title: {title}\nLink: {full_url}',
+                                    'link': full_url
+                                })
             
-            for div in soup.find_all(['div', 'article'], id=True):
-                div_text = div.get_text().lower()
-                if any(k in div_text for k in ['recruitment', 'vacancy', 'state jobs']):
-                    for link in div.find_all('a', href=True):
-                        title = link.get_text(strip=True)
-                        if title and len(title) >= 15:
-                            href = link['href']
-                            full_url = href if href.startswith('http') else f'https://freejobalert.com{href}'
-                            jobs.append({
-                                'title': title,
-                                'raw_content': f'Title: {title}\nLink: {full_url}',
-                                'link': full_url
-                            })
+            if not jobs:
+                tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.IGNORECASE | re.DOTALL)
+                tr_matches = tr_pattern.findall(response.text)
+                for tr_match in tr_matches:
+                    if any(k in tr_match.lower() for k in ['recruitment', 'vacancy', 'notification']):
+                        a_pattern = re.compile(r'<a[^>]*href=["\']([^"\']*)["\'][^>]*>(.*?)</a>', re.IGNORECASE)
+                        a_matches = a_pattern.findall(tr_match)
+                        for href, title in a_matches[:2]:
+                            if len(title) >= 10:
+                                full_url = href if href.startswith('http') else f'https://freejobalert.com{href}'
+                                jobs.append({
+                                    'title': title.strip(),
+                                    'raw_content': f'Title: {title.strip()}\nLink: {full_url}',
+                                    'link': full_url
+                                })
             
             print(f'freejobalert: Found {len(jobs)} listings')
             if jobs:
-                return jobs[:15]
+                return jobs[:20]
         except Exception as e:
             print(f'freejobalert ({url}) error: {type(e).__name__}: {e}')
         time.sleep(2)
     
-    return jobs[:15]
+    return jobs[:20]
 
 def scrape_sarkari_exams() -> List[Dict[str, Any]]:
     jobs = []
     scraper = create_scraper()
     
-    for url in ['https://www.sarkariexams.com/', 'https://sarkariexams.com/']:
+    urls = ['https://www.sarkariexams.com/', 'https://sarkariexams.com/']
+    
+    for url in urls:
         try:
             if CLOUDSCRAPER_AVAILABLE:
                 response = scraper.get(url, timeout=15)
@@ -252,36 +182,39 @@ def scrape_sarkari_exams() -> List[Dict[str, Any]]:
             
             if response.status_code != 200:
                 continue
-                
+            
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            for item in soup.find_all(['h2', 'h3', 'li']):
-                text = item.get_text(strip=True)
-                if text and len(text) >= 15 and any(k in text.lower() for k in ['recruitment', 'vacancy', 'exam', '2024', '2025', '2026']):
-                    link = item.find('a', href=True)
-                    href = link['href'] if link else ''
+            h_pattern = re.compile(r'<(h2|h3|h4)[^>]*>(.*?)</\1>', re.IGNORECASE)
+            h_matches = h_pattern.findall(response.text)
+            
+            for tag, text in h_matches:
+                if any(k in text.lower() for k in ['recruitment', 'vacancy', '2024', '2025', '2026', 'exam']):
                     jobs.append({
-                        'title': text,
-                        'raw_content': f'Title: {text}\nLink: {href}',
-                        'link': href
+                        'title': text.strip(),
+                        'raw_content': f'Title: {text.strip()}\nLink: {url}',
+                        'link': url
                     })
             
             print(f'sarkariexams: Found {len(jobs)} listings')
             if jobs:
-                return jobs[:10]
+                return jobs[:15]
         except Exception as e:
             print(f'sarkariexams ({url}) error: {type(e).__name__}: {e}')
         time.sleep(2)
     
-    return jobs[:10]
+    return jobs[:15]
 
 def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not raw_jobs:
+        return []
+    
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
     processed_jobs = []
     
     for job in raw_jobs:
-        prompt = f"""Extract job details. Look for "Date", "Last Date", "Post Name", "Link" patterns.
+        prompt = f"""Extract job details. Look for "Date", "Last Date", "Post Name", "Link".
 
 Return ONLY valid JSON:
 {{
@@ -301,7 +234,7 @@ Source: {job['raw_content']}"""
             json_text = response.text.strip()
             
             if json_text.startswith('```'):
-                json_text = '\n'.join(json_text.split('\n')[1:-1])
+                json_text = '\n'.join(json_text.split('\n')[1:-1]).strip()
             
             parsed = json.loads(json_text)
             org = normalize_organization(parsed.get('title', ''))
@@ -311,14 +244,14 @@ Source: {job['raw_content']}"""
                 parsed['last_date'] = '2026-12-31'
             if not parsed.get('official_apply_link') and job.get('link'):
                 parsed['official_apply_link'] = job['link']
-                
+            
             processed_jobs.append(parsed)
             print(f'Processed: {parsed.get("title", "Unknown")}')
             
         except json.JSONDecodeError as e:
             print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
         except Exception as e:
-            print(f'Gemini processing error: {type(e).__name__}: {e}')
+            print(f'Gemini error: {type(e).__name__}: {e}')
         
         time.sleep(1)
     
@@ -370,9 +303,7 @@ def main():
     print('Starting Sarkari Jobs pipeline...')
     
     all_jobs = []
-    all_jobs.extend(scrape_sarkari_result_rss())
-    time.sleep(2)
-    all_jobs.extend(scrape_sarkari_result_html())
+    all_jobs.extend(scrape_sarkari_result())
     time.sleep(2)
     all_jobs.extend(scrape_freejobalert())
     time.sleep(2)
@@ -382,7 +313,7 @@ def main():
     print(f'Total scraped: {total_scraped} listings')
     
     if total_scraped == 0:
-        print('No jobs scraped - adding test connection job to verify Supabase integration')
+        print('No jobs scraped - adding test connection job')
         all_jobs.append({
             'title': 'Test Connection Job',
             'organization': 'System Test',
@@ -398,7 +329,7 @@ def main():
         processed_jobs = process_with_gemini(all_jobs)
     
     if not processed_jobs:
-        print('No jobs processed successfully')
+        print('No jobs processed - exiting')
         return
     
     inserted_count = sum(1 for job in processed_jobs if insert_job(job))
