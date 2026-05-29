@@ -26,7 +26,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Referer": "https://www.google.com/"
+    "Referer": "https://www.google.com/",
+    "Accept-Encoding": "gzip, deflate, br"
 }
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -47,7 +48,9 @@ ORGANIZATION_MAPPING = {
 
 def create_scraper():
     if CLOUDSCRAPER_AVAILABLE:
-        return cloudscraper.create_scraper()
+        scraper = cloudscraper.create_scraper()
+        scraper.headers.update(HEADERS)
+        return scraper
     return requests.Session()
 
 def normalize_organization(text: str) -> str:
@@ -74,11 +77,13 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
             if CLOUDSCRAPER_AVAILABLE:
                 response = scraper.get(url, timeout=15)
             else:
-                response = requests.get(url, headers=HEADERS, timeout=15, verify=True)
+                response = requests.get(url, headers=HEADERS, timeout=15)
+            
+            print(f'sarkariresult.com ({url}): Status {response.status_code}')
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            for div in soup.find_all(['div', 'li', 'td']):
+            for div in soup.find_all(['div', 'li', 'td', 'p']):
                 link = div.find('a', href=True)
                 if link:
                     title = link.get_text(strip=True)
@@ -116,10 +121,12 @@ def scrape_sarkari_exams() -> List[Dict[str, Any]]:
                 response = scraper.get(url, timeout=15)
             else:
                 response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            
+            print(f'sarkariexams.com ({url}): Status {response.status_code}')
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            for item in soup.find_all(['h2', 'h3', 'div', 'li']):
+            for item in soup.find_all(['h2', 'h3', 'div', 'li', 'p']):
                 text = item.get_text(strip=True)
                 link = item.find('a', href=True)
                 href = link['href'] if link else ''
