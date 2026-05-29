@@ -1,5 +1,6 @@
 import os
 import json
+import urllib3
 from datetime import date
 from typing import List, Dict, Any
 
@@ -7,6 +8,8 @@ import requests
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 import google.generativeai as genai
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
@@ -16,7 +19,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set')
 
 if not GEMINI_API_KEY:
-    raise ValueError('GEMINI_API_KEY environment variables must be set')
+    raise ValueError('GEMINI_API_KEY environment variable must be set')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -29,6 +32,8 @@ ORGANIZATION_MAPPING = {
 }
 
 def normalize_organization(text: str) -> str:
+    if not text:
+        return 'Other'
     text_lower = text.lower()
     for org, keywords in ORGANIZATION_MAPPING.items():
         for keyword in keywords:
@@ -43,7 +48,12 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
     }
     
     try:
-        response = requests.get('https://www.sarkariresult.com/', headers=headers, timeout=30)
+        response = requests.get(
+            'https://www.sarkariresult.com/',
+            headers=headers,
+            timeout=30,
+            verify=True
+        )
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -58,8 +68,9 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
                         'raw_content': f'Title: {title}\nLink: {href}',
                         'link': href
                     })
+        print(f'sarkariresult.com: Found {len(jobs)} listings')
     except Exception as e:
-        print(f'Error scraping sarkariresult.com: {e}')
+        print(f'sarkariresult.com error: {type(e).__name__}: {e}')
     
     return jobs[:10]
 
@@ -70,7 +81,12 @@ def scrape_sarkari_exams() -> List[Dict[str, Any]]:
     }
     
     try:
-        response = requests.get('https://www.sarkariexams.com/', headers=headers, timeout=30)
+        response = requests.get(
+            'https://www.sarkariexams.com/',
+            headers=headers,
+            timeout=30,
+            verify=False
+        )
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -85,8 +101,9 @@ def scrape_sarkari_exams() -> List[Dict[str, Any]]:
                     'raw_content': f'Title: {text}\nLink: {href}',
                     'link': href
                 })
+        print(f'sarkariexams.com: Found {len(jobs)} listings')
     except Exception as e:
-        print(f'Error scraping sarkariexams.com: {e}')
+        print(f'sarkariexams.com error: {type(e).__name__}: {e}')
     
     return jobs[:10]
 
@@ -96,19 +113,19 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     processed_jobs = []
     
     for job in raw_jobs:
-        prompt = f"""Extract job details into JSON only (no markdown, no explanation):
+        prompt = f"""Extract job details as valid JSON only (no markdown):
 
 Input: {job['raw_content']}
 
 Output format:
 {{
-  "title": "cleaned job title, max 100 chars",
-  "total_vacancies": "number string like '100+' or null",
+  "title": "cleaned job title max 100 chars",
+  "total_vacancies": "string like '100+' or 'Not specified'",
   "start_date": "YYYY-MM-DD or null",
-  "last_date": "YYYY-MM-DD (estimate 2026-12-31 if unknown)",
+  "last_date": "YYYY-MM-DD mandatory",
   "fee_details": "application fees or 'As per official notification'",
   "eligibility": "age and education requirements",
-  "official_apply_link": "URL string"
+  "official_apply_link": "URL or {job['link']}"
 }}"""
         
         try:
@@ -119,7 +136,8 @@ Output format:
                 json_text = '\n'.join(json_text.split('\n')[1:-1])
             
             parsed = json.loads(json_text)
-            parsed['organization'] = normalize_organization(parsed.get('title', ''))
+            org = normalize_organization(parsed.get('title', ''))
+            parsed['organization'] = org
             
             if not parsed.get('last_date'):
                 parsed['last_date'] = '2026-12-31'
@@ -130,99 +148,74 @@ Output format:
             print(f'Processed: {parsed.get("title", "Unknown")}')
             
         except json.JSONDecodeError as e:
-            print(f'Gemini JSON error for {job.get("title", "Unknown")}: {e}')
+            print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
         except Exception as e:
-            print(f'Gemini error: {e}')
+            print(f'Gemini processing error: {type(e).__name__}: {e}')
     
     return processed_jobs
 
-def deduplicate_and_insert(jobs: List[Dict[str, Any]]) -> int:
-    inserted = 0
-    today = date.today().isoformat()
-    
-    for job in jobs:
-        try:
-            existing = supabase.table('jobs').select('id').eq('title', job['title']).eq('organization', job['organization']).execute()
+def insert_job(job: Dict[str, Any]) -> bool:
+    try:
+        existing = supabase.table('jobs').select('id').eq('title', job.get('title', '')).eq('organization', job.get('organization', '')).execute()
+        
+        if existing.data and len(existing.data) > 0:
+            print(f'Skip existing: {job.get("title")}')
+            return False
+        
+        job_data = {
+            'title': job.get('title', ''),
+            'organization': job.get('organization', 'Other'),
+            'total_vacancies': job.get('total_vacancies', 'Not specified'),
+            'start_date': job.get('start_date'),
+            'last_date': job.get('last_date') or '2026-12-31',
+            'fee_details': job.get('fee_details', 'As per official notification'),
+            'eligibility': job.get('eligibility', 'Not specified'),
+            'official_apply_link': job.get('official_apply_link', '')
+        }
+        
+        result = supabase.table('jobs').insert(job_data).execute()
+        
+        if result.data:
+            print(f'Inserted: {job.get("title")}')
+            return True
+        return False
             
-            if existing.data and len(existing.data) > 0:
-                print(f'Skip existing: {job["title"]}')
-                continue
-            
-            job['start_date'] = job.get('start_date')
-            job['last_date'] = job.get('last_date') or '2026-12-31'
-            
-            result = supabase.table('jobs').insert(job).execute()
-            
-            if result.data:
-                inserted += 1
-                print(f'Inserted: {job["title"]}')
-                
-        except Exception as e:
-            print(f'Insert error for {job.get("title", "Unknown")}: {e}')
-    
-    return inserted
+    except Exception as e:
+        print(f'Insert error for {job.get("title", "Unknown")}: {type(e).__name__}: {e}')
+        return False
 
 def cleanup_expired_jobs() -> int:
     today = date.today().isoformat()
     
     try:
         result = supabase.table('jobs').delete().lt('last_date', today).execute()
-        return len(result.data) if result.data else 0
+        count = len(result.data) if result.data else 0
+        print(f'Deleted {count} expired jobs')
+        return count
     except Exception as e:
-        print(f'Cleanup error: {e}')
+        print(f'Cleanup error: {type(e).__name__}: {e}')
         return 0
 
 def main():
     print('Starting Sarkari Jobs pipeline...')
     
     all_jobs = scrape_sarkari_result() + scrape_sarkari_exams()
-    print(f'Scraped {len(all_jobs)} listings')
+    print(f'Total scraped: {len(all_jobs)} listings')
     
     if not all_jobs:
-        print('No listings found, adding sample data for testing...')
-        sample_jobs = [
-            {
-                'title': 'SSC CGL Recruitment 2026',
-                'organization': 'SSC',
-                'total_vacancies': '9,400+',
-                'start_date': '2025-06-01',
-                'last_date': '2025-07-15',
-                'fee_details': 'General/OBC: ₹100, SC/ST: ₹0',
-                'eligibility': 'Graduate in any stream',
-                'official_apply_link': 'https://ssc.nic.in/cgl'
-            },
-            {
-                'title': 'UPSC NDA (II) Recruitment 2026',
-                'organization': 'Defence',
-                'total_vacancies': '400+',
-                'start_date': '2025-06-01',
-                'last_date': '2025-07-01',
-                'fee_details': 'General: ₹100, SC/ST: ₹0',
-                'eligibility': '12th Pass / Graduate',
-                'official_apply_link': 'https://upsc.gov.in/nda'
-            }
-        ]
-        inserted = deduplicate_and_insert(sample_jobs)
-    else:
-        processed = process_with_gemini(all_jobs)
-        if processed:
-            inserted = deduplicate_and_insert(processed)
-        else:
-            print('No jobs processed, using sample data')
-            sample_jobs = [{
-                'title': 'Railway RRB NTPC Recruitment 2026',
-                'organization': 'Railways',
-                'total_vacancies': '35,000+',
-                'start_date': '2025-06-01',
-                'last_date': '2025-07-31',
-                'fee_details': 'General/OBC: ₹100, SC/ST: ₹0',
-                'eligibility': '12th Pass / Graduate',
-                'official_apply_link': 'https://rrbcdg.nic.in/'
-            }]
-            inserted = deduplicate_and_insert(sample_jobs)
+        print('No jobs scraped, exiting without sample data')
+        return
     
-    deleted = cleanup_expired_jobs()
-    print(f'Pipeline complete. Inserted: {inserted}, Deleted expired: {deleted}')
+    processed_jobs = process_with_gemini(all_jobs)
+    
+    if not processed_jobs:
+        print('No jobs processed successfully')
+        return
+    
+    inserted_count = sum(1 for job in processed_jobs if insert_job(job))
+    deleted_count = cleanup_expired_jobs()
+    
+    print(f'Pipeline complete. Inserted: {inserted_count}, Deleted expired: {deleted_count}')
 
 if __name__ == '__main__':
     main()
