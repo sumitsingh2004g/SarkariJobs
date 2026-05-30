@@ -399,7 +399,7 @@ def main():
     if total_scraped == 0:
         print('No jobs scraped - adding test connection job - Run V2')
         all_jobs.append({
-            'title': 'Test Connection Job - Run V2',
+            'title': f'Test Connection Job - Run V2 - {int(time.time())}',
             'organization': 'System Test',
             'total_vacancies': '1',
             'start_date': None,
