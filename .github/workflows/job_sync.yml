@@ -27,6 +27,5 @@ jobs:
         working-directory: ./backend_automation
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: python scraper_pipeline.py

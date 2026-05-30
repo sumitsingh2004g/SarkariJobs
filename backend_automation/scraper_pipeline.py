@@ -11,13 +11,9 @@ from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set')
-
-if not GEMINI_API_KEY:
-    raise ValueError('GEMINI_API_KEY environment variable must be set')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -38,12 +34,6 @@ def normalize_organization(text: str) -> str:
             if keyword in text_lower:
                 return org
     return 'Other'
-
-def clean_text(text: str) -> str:
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'[^\w\s\-/,]', ' ', text)
-    return text.strip()
 
 def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
@@ -249,10 +239,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     processed_jobs = []
     
     for job in raw_jobs:
-        print(f'Processing raw job: {job.get("title", "Unknown")}')
-        
         org = normalize_organization(job.get('title', ''))
-        processed_jobs.append({
+        processed_job = {
             'title': job.get('title', ''),
             'organization': org,
             'total_vacancies': 'Not specified',
@@ -261,18 +249,14 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             'fee_details': 'As per official notification',
             'eligibility': 'Not specified',
             'official_apply_link': job.get('link', '')
-        })
+        }
+        print(f'AI processed: {processed_job["title"]} -> {processed_job["official_apply_link"]}')
+        processed_jobs.append(processed_job)
     
     return processed_jobs
 
 def insert_job(job: Dict[str, Any]) -> bool:
     try:
-        existing = supabase.table('jobs').select('id').eq('title', job.get('title', '')).eq('organization', job.get('organization', '')).execute()
-        
-        if existing.data and len(existing.data) > 0:
-            print(f'Skip existing: {job.get("title")}')
-            return False
-        
         job_data = {
             'title': job.get('title', ''),
             'organization': job.get('organization', 'Other'),
@@ -284,10 +268,10 @@ def insert_job(job: Dict[str, Any]) -> bool:
             'official_apply_link': job.get('official_apply_link', '')
         }
         
-        result = supabase.table('jobs').insert(job_data).execute()
+        result = supabase.table('jobs').upsert(job_data, on_conflict='title').execute()
         
         if result.data:
-            print(f'Inserted: {job.get("title")}')
+            print(f'Upserted: {job.get("title")}')
             return True
         return False
             
