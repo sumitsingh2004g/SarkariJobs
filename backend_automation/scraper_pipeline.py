@@ -14,7 +14,6 @@ except ImportError:
     CLOUDSCRAPER_AVAILABLE = False
 
 from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET
 from supabase import create_client, Client
 import google.generativeai as genai
 
@@ -85,37 +84,24 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
             print(f'sarkariresult RSS ({rss_url}): Status {response.status_code}')
             
             if response.status_code == 200:
-                try:
-                    root = ET.fromstring(response.content)
+                soup = BeautifulSoup(response.content, 'xml')
+                
+                for item in soup.find_all('item'):
+                    title_tag = item.find('title')
+                    link_tag = item.find('link')
+                    title = title_tag.get_text(strip=True) if title_tag else ''
+                    link = link_tag.get_text(strip=True) if link_tag else ''
                     
-                    items = []
-                    for item in root.iter():
-                        if item.tag and 'item' in item.tag.lower():
-                            items.append(item)
-                    
-                    for item in items:
-                        title = ''
-                        link = ''
-                        
-                        for child in item:
-                            if child.tag and 'title' in child.tag.lower() and child.text:
-                                title = child.text
-                            if child.tag and 'link' in child.tag.lower() and child.text:
-                                link = child.text
-                        
-                        if title and len(title) >= 10:
-                            jobs.append({
-                                'title': title,
-                                'raw_content': f'Title: {title}\nLink: {link}',
-                                'link': link or rss_url
-                            })
-                    
-                    print(f'sarkariresult RSS: Found {len(jobs)} items in XML')
-                    if jobs:
-                        return jobs[:20]
-                except ET.ParseError as e:
-                    print(f'sarkariresult RSS parse error: {e}')
-                    print(f'RSS content preview: {response.text[:500]}')
+                    if title and len(title) >= 10:
+                        jobs.append({
+                            'title': title,
+                            'raw_content': f'Title: {title}\nLink: {link}',
+                            'link': link or rss_url
+                        })
+                
+                print(f'sarkariresult RSS: Found {len(jobs)} items via BeautifulSoup XML parser')
+                if jobs:
+                    return jobs[:20]
         except Exception as e:
             print(f'sarkariresult RSS error: {type(e).__name__}: {e}')
         time.sleep(2)
@@ -210,7 +196,7 @@ def scrape_indeed_govt() -> List[Dict[str, Any]]:
     jobs = []
     scraper = create_scraper()
     
-    url = 'https://in.indeed.com/jobs?q=government+jobs&jt=fulltime&sc=0kf%3Aattr%28DSQF7%29%3B'
+    url = 'https://in.indeed.com/jobs?q=government+jobs&jt=fulltime'
     
     try:
         if CLOUDSCRAPER_AVAILABLE:
@@ -221,21 +207,21 @@ def scrape_indeed_govt() -> List[Dict[str, Any]]:
         print(f'indeed govt ({url}): Status {response.status_code}')
         
         if response.status_code == 200:
-            h_pattern = re.compile(r'<h2[^>]*class="jobTitle[^"]*"[^>]*>(.*?)</h2>', re.IGNORECASE | re.DOTALL)
-            a_pattern = re.compile(r'<a[^>]*href=["\'](/viewjob[^"\']*)["\'][^>]*>', re.IGNORECASE)
+            tr_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.IGNORECASE | re.DOTALL)
+            tr_matches = tr_pattern.findall(response.text)
             
-            h_matches = h_pattern.findall(response.text)
-            a_matches = a_pattern.findall(response.text)
-            
-            for title in h_matches[:10]:
-                soup = BeautifulSoup(title, 'html.parser')
-                text = soup.get_text(strip=True)
-                if text and len(text) >= 15:
-                    jobs.append({
-                        'title': text,
-                        'raw_content': f'Title: {text}\nLink: https://in.indeed.com{a_matches[0] if a_matches else url}',
-                        'link': f'https://in.indeed.com{a_matches[0] if a_matches else url}'
-                    })
+            for tr_match in tr_matches:
+                if any(k in tr_match.lower() for k in ['government', 'recruitment', 'vacancy']):
+                    a_pattern = re.compile(r'<a[^>]*href=["\'](/viewjob[^"\']*)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+                    a_matches = a_pattern.findall(tr_match)
+                    for href, title in a_matches[:2]:
+                        title_clean = title.strip()
+                        if len(title_clean) >= 10:
+                            jobs.append({
+                                'title': title_clean,
+                                'raw_content': f'Title: {title_clean}\nLink: https://in.indeed.com{href}',
+                                'link': f'https://in.indeed.com{href}'
+                            })
             
             print(f'indeed govt: Found {len(jobs)} listings')
             return jobs[:15]
