@@ -2,37 +2,17 @@ import os
 import json
 import re
 import time
-import urllib3
 from datetime import date
 from typing import List, Dict, Any
 
-import requests
-try:
-    import cloudscraper
-    CLOUDSCRAPER_AVAILABLE = True
-except ImportError:
-    CLOUDSCRAPER_AVAILABLE = False
-
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 import google.generativeai as genai
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.google.com/",
-    "DNT": "1",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1"
-}
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set')
@@ -50,13 +30,6 @@ ORGANIZATION_MAPPING = {
     'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
 }
 
-def create_scraper():
-    if CLOUDSCRAPER_AVAILABLE:
-        scraper = cloudscraper.create_scraper(delay=5, browser='chrome')
-        scraper.headers.update(HEADERS)
-        return scraper
-    return requests.Session()
-
 def normalize_organization(text: str) -> str:
     if not text:
         return 'Other'
@@ -69,20 +42,15 @@ def normalize_organization(text: str) -> str:
 
 def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
-    scraper = create_scraper()
     
     urls_to_try = [
         'https://www.sarkariresult.com/latestjob/',
         'https://www.sarkariresult.com/rss.php',
-        'https://sarkariresult.com/feed',
     ]
     
     for url in urls_to_try:
         try:
-            if CLOUDSCRAPER_AVAILABLE:
-                response = scraper.get(url, timeout=15)
-            else:
-                response = requests.get(url, headers=HEADERS, timeout=15)
+            response = requests.get(url, impersonate="chrome", timeout=15)
             
             print(f'sarkariresult ({url}): Status {response.status_code}')
             
@@ -137,16 +105,12 @@ def scrape_sarkari_result() -> List[Dict[str, Any]]:
 
 def scrape_freejobalert() -> List[Dict[str, Any]]:
     jobs = []
-    scraper = create_scraper()
     
     urls = ['https://www.freejobalert.com/', 'https://freejobalert.com/']
     
     for url in urls:
         try:
-            if CLOUDSCRAPER_AVAILABLE:
-                response = scraper.get(url, timeout=15)
-            else:
-                response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            response = requests.get(url, impersonate="chrome", timeout=15)
             
             print(f'freejobalert ({url}): Status {response.status_code}')
             
@@ -180,16 +144,12 @@ def scrape_freejobalert() -> List[Dict[str, Any]]:
 
 def scrape_sarkari_exams() -> List[Dict[str, Any]]:
     jobs = []
-    scraper = create_scraper()
     
     urls = ['https://www.sarkariexams.com/', 'https://sarkariexams.com/']
     
     for url in urls:
         try:
-            if CLOUDSCRAPER_AVAILABLE:
-                response = scraper.get(url, timeout=15)
-            else:
-                response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            response = requests.get(url, impersonate="chrome", timeout=15)
             
             print(f'sarkariexams ({url}): Status {response.status_code}')
             
@@ -218,15 +178,11 @@ def scrape_sarkari_exams() -> List[Dict[str, Any]]:
 
 def scrape_indeed_govt() -> List[Dict[str, Any]]:
     jobs = []
-    scraper = create_scraper()
     
     url = 'https://in.indeed.com/jobs?q=government+jobs&jt=fulltime'
     
     try:
-        if CLOUDSCRAPER_AVAILABLE:
-            response = scraper.get(url, timeout=15)
-        else:
-            response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        response = requests.get(url, impersonate="chrome", timeout=15)
         
         print(f'indeed govt ({url}): Status {response.status_code}')
         
@@ -251,15 +207,11 @@ def scrape_indeed_govt() -> List[Dict[str, Any]]:
 
 def scrape_joberr_govt() -> List[Dict[str, Any]]:
     jobs = []
-    scraper = create_scraper()
     
     url = 'https://www.joberr.com/govt-jobs'
     
     try:
-        if CLOUDSCRAPER_AVAILABLE:
-            response = scraper.get(url, timeout=15)
-        else:
-            response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        response = requests.get(url, impersonate="chrome", timeout=15)
         
         print(f'joberr ({url}): Status {response.status_code}')
         
