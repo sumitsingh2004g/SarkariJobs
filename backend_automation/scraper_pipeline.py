@@ -8,7 +8,6 @@ from typing import List, Dict, Any
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
-import google.generativeai as genai
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
@@ -247,56 +246,22 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
         return []
     
-    genai.configure(api_key=GEMINI_API_KEY)
-    
     processed_jobs = []
     
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
     for job in raw_jobs:
-        cleaned_content = clean_text(job.get('raw_content', ''))
-        if not cleaned_content or len(cleaned_content) < 10:
-            print(f'Skipping job due to empty/malformed content')
-            continue
+        print(f'Processing raw job: {job.get("title", "Unknown")}')
         
-        prompt = f"""Extract job details from this text:
-
-{cleaned_content}
-
-Return ONLY valid JSON with these fields:
-{{
-  "title": "cleaned job title max 100 chars",
-  "total_vacancies": "string like '100+' or 'Not specified'",
-  "start_date": "YYYY-MM-DD or null",
-  "last_date": "YYYY-MM-DD mandatory - use far future date if unknown",
-  "fee_details": "application fees or 'As per official notification'",
-  "eligibility": "age and education requirements"
-}}"""
-        
-        try:
-            response = model.generate_content(prompt)
-            json_text = response.text.strip()
-            
-            if json_text.startswith('```'):
-                json_text = '\n'.join(json_text.split('\n')[1:-1]).strip()
-            
-            parsed = json.loads(json_text)
-            org = normalize_organization(parsed.get('title', ''))
-            parsed['organization'] = org
-            
-            if not parsed.get('last_date'):
-                parsed['last_date'] = '2026-12-31'
-            parsed['official_apply_link'] = job.get('link', '')
-            
-            processed_jobs.append(parsed)
-            print(f'Processed: {parsed.get("title", "Unknown")}')
-            
-        except json.JSONDecodeError as e:
-            print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
-        except Exception as e:
-            print(f'Gemini error for {job.get("title", "Unknown")}: {type(e).__name__}: {e}')
-        
-        time.sleep(1)
+        org = normalize_organization(job.get('title', ''))
+        processed_jobs.append({
+            'title': job.get('title', ''),
+            'organization': org,
+            'total_vacancies': 'Not specified',
+            'start_date': None,
+            'last_date': '2026-12-31',
+            'fee_details': 'As per official notification',
+            'eligibility': 'Not specified',
+            'official_apply_link': job.get('link', '')
+        })
     
     return processed_jobs
 
