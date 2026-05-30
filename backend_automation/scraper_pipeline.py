@@ -242,7 +242,7 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return []
     
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     processed_jobs = []
     
     for job in raw_jobs:
@@ -262,6 +262,7 @@ Return ONLY valid JSON:
 Source: {job['raw_content']}"""
         
         try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             json_text = response.text.strip()
             
@@ -283,7 +284,18 @@ Source: {job['raw_content']}"""
         except json.JSONDecodeError as e:
             print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
         except Exception as e:
-            print(f'Gemini error: {type(e).__name__}: {e}')
+            print(f'Gemini error for {job.get("title", "Unknown")}: {type(e).__name__}: {e}')
+            org = normalize_organization(job.get('title', ''))
+            processed_jobs.append({
+                'title': job.get('title', ''),
+                'organization': org,
+                'total_vacancies': 'Not specified',
+                'start_date': None,
+                'last_date': '2026-12-31',
+                'fee_details': 'As per official notification',
+                'eligibility': 'Not specified',
+                'official_apply_link': job.get('link', '')
+            })
         
         time.sleep(1)
     
