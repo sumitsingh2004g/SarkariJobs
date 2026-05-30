@@ -25,12 +25,13 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.google.com/",
     "DNT": "1",
-    "Connection": "keep-alive"
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -51,7 +52,7 @@ ORGANIZATION_MAPPING = {
 
 def create_scraper():
     if CLOUDSCRAPER_AVAILABLE:
-        scraper = cloudscraper.create_scraper(delay=10)
+        scraper = cloudscraper.create_scraper(delay=5, browser='chrome')
         scraper.headers.update(HEADERS)
         return scraper
     return requests.Session()
@@ -248,6 +249,42 @@ def scrape_indeed_govt() -> List[Dict[str, Any]]:
     
     return jobs[:15]
 
+def scrape_joberr_govt() -> List[Dict[str, Any]]:
+    jobs = []
+    scraper = create_scraper()
+    
+    url = 'https://www.joberr.com/govt-jobs'
+    
+    try:
+        if CLOUDSCRAPER_AVAILABLE:
+            response = scraper.get(url, timeout=15)
+        else:
+            response = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        
+        print(f'joberr ({url}): Status {response.status_code}')
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            for div in soup.find_all(['div', 'article'], class_=lambda x: x and any(k in str(x).lower() for k in ['job', 'post', 'entry'])):
+                for link in div.find_all('a', href=True):
+                    title = link.get_text(strip=True)
+                    if title and len(title) >= 10:
+                        href = link['href']
+                        full_url = href if href.startswith('http') else f'https://www.joberr.com{href}'
+                        jobs.append({
+                            'title': title,
+                            'raw_content': f'Title: {title}\nLink: {full_url}',
+                            'link': full_url
+                        })
+            
+            print(f'joberr: Found {len(jobs)} listings')
+            return jobs[:15]
+    except Exception as e:
+        print(f'joberr error: {type(e).__name__}: {e}')
+    
+    return jobs[:15]
+
 def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
         return []
@@ -353,6 +390,8 @@ def main():
     all_jobs.extend(scrape_sarkari_exams())
     time.sleep(2)
     all_jobs.extend(scrape_indeed_govt())
+    time.sleep(2)
+    all_jobs.extend(scrape_joberr_govt())
     
     total_scraped = len(all_jobs)
     print(f'Total scraped: {total_scraped} listings')
