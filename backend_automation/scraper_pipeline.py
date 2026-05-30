@@ -267,10 +267,10 @@ def insert_job(job: Dict[str, Any]) -> bool:
             'official_apply_link': job.get('official_apply_link', '')
         }
         
-        result = supabase.table('jobs').upsert(job_data, on_conflict='title').execute()
+        result = supabase.table('jobs').insert(job_data).execute()
         
         if result.data:
-            print(f'Upserted: {job.get("title")}')
+            print(f'Inserted: {job.get("title")}')
             return True
         return False
             
