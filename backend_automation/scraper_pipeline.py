@@ -30,6 +30,13 @@ ORGANIZATION_MAPPING = {
     'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
 }
 
+SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUAL_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+]
+
 def normalize_organization(text: str) -> str:
     if not text:
         return 'Other'
@@ -39,6 +46,12 @@ def normalize_organization(text: str) -> str:
             if keyword in text_lower:
                 return org
     return 'Other'
+
+def clean_text(text: str) -> str:
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\w\s\-/,]', ' ', text)
+    return text.strip()
 
 def scrape_sarkari_result() -> List[Dict[str, Any]]:
     jobs = []
@@ -246,23 +259,27 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     processed_jobs = []
     
     for job in raw_jobs:
-        prompt = f"""Extract job details. Look for "Date", "Last Date", "Post Name", "Link".
+        cleaned_content = clean_text(job.get('raw_content', ''))
+        if not cleaned_content or len(cleaned_content) < 10:
+            print(f'Skipping job due to empty/malformed content')
+            continue
+        
+        prompt = f"""Extract job details from this text:
 
-Return ONLY valid JSON:
+{cleaned_content}
+
+Return ONLY valid JSON with these fields:
 {{
   "title": "cleaned job title max 100 chars",
   "total_vacancies": "string like '100+' or 'Not specified'",
   "start_date": "YYYY-MM-DD or null",
   "last_date": "YYYY-MM-DD mandatory - use far future date if unknown",
   "fee_details": "application fees or 'As per official notification'",
-  "eligibility": "age and education requirements",
-  "official_apply_link": "URL"
-}}
-
-Source: {job['raw_content']}"""
+  "eligibility": "age and education requirements"
+}}"""
         
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=SAFETY_SETTINGS)
             response = model.generate_content(prompt)
             json_text = response.text.strip()
             
@@ -275,8 +292,7 @@ Source: {job['raw_content']}"""
             
             if not parsed.get('last_date'):
                 parsed['last_date'] = '2026-12-31'
-            if not parsed.get('official_apply_link') and job.get('link'):
-                parsed['official_apply_link'] = job['link']
+            parsed['official_apply_link'] = job.get('link', '')
             
             processed_jobs.append(parsed)
             print(f'Processed: {parsed.get("title", "Unknown")}')
@@ -285,17 +301,6 @@ Source: {job['raw_content']}"""
             print(f'JSON decode error for {job.get("title", "Unknown")}: {e}')
         except Exception as e:
             print(f'Gemini error for {job.get("title", "Unknown")}: {type(e).__name__}: {e}')
-            org = normalize_organization(job.get('title', ''))
-            processed_jobs.append({
-                'title': job.get('title', ''),
-                'organization': org,
-                'total_vacancies': 'Not specified',
-                'start_date': None,
-                'last_date': '2026-12-31',
-                'fee_details': 'As per official notification',
-                'eligibility': 'Not specified',
-                'official_apply_link': job.get('link', '')
-            })
         
         time.sleep(1)
     
