@@ -30,13 +30,6 @@ ORGANIZATION_MAPPING = {
     'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
 }
 
-SAFETY_SETTINGS = [
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUAL_CONTENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-]
-
 def normalize_organization(text: str) -> str:
     if not text:
         return 'Other'
@@ -258,6 +251,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     
     processed_jobs = []
     
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     for job in raw_jobs:
         cleaned_content = clean_text(job.get('raw_content', ''))
         if not cleaned_content or len(cleaned_content) < 10:
@@ -279,7 +274,6 @@ Return ONLY valid JSON with these fields:
 }}"""
         
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=SAFETY_SETTINGS)
             response = model.generate_content(prompt)
             json_text = response.text.strip()
             
