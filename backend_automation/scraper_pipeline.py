@@ -10,11 +10,18 @@ from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set')
+if not GEMINI_API_KEY:
+    raise ValueError('GEMINI_API_KEY environment variable must be set')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Configure Gemini
+import google.generativeai as genai
+genai.configure(api_key=GEMINI_API_KEY)
 
 ORGANIZATION_MAPPING = {
     'SSC': ['ssc', 'staff selection commission'],
@@ -234,24 +241,88 @@ def scrape_joberr_govt() -> List[Dict[str, Any]]:
 def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
         return []
-    
+
     processed_jobs = []
-    
+    model = genai.GenerativeModel('gemini-1.5-flash')  # or pro
+
+    system_instruction = (
+        "You are an expert at extracting structured information from Indian government job recruitment notices. "
+        "Given the full text of a job vacancy inner page, extract:\n"
+        "1. total_vacancies: Look explicitly for fields like 'Total Vacancy', 'Total Posts', or table cells indicating numbers (e.g., '1400+'). "
+        "If a breakdown is provided (e.g., 'Category-wise: 100 UR, 50 OBC, ...'), sum them or take the total if explicitly stated. "
+        "Do NOT default to 'Not specified' if the text contains any numeric vacancy information. "
+        "If no vacancy number can be found, return 'Not specified'.\n"
+        "2. official_apply_link: Locate and extract the actual government official website domain or registration link. "
+        "Look for links containing '.gov.in', '.nic.in', or text explicitly labeled 'Official Website Link', 'Apply Online', 'Registration Link', etc. "
+        "If multiple such links exist, prefer the one that appears to be the official application portal. "
+        "Do NOT return the source page URL (e.g., freejobalert.com). If no official link is found, return the source page URL as fallback.\n"
+        "Return your answer as a JSON object with exactly two keys: 'total_vacancies' (string) and 'official_apply_link' (string). "
+        "Do not include any extra text."
+    )
+
     for job in raw_jobs:
         org = normalize_organization(job.get('title', ''))
+        # Default values
+        total_vacancies = 'Not specified'
+        official_apply_link = job.get('link', '')  # fallback to source link
+
+        try:
+            # Fetch inner page
+            resp = requests.get(job['link'], impersonate="chrome", timeout=15)
+            if resp.status_code == 200:
+                # Extract text
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                # Remove script/style
+                for tag in soup(['script', 'style', 'noscript']):
+                    tag.decompose()
+                text = soup.get_text(separator=' ', strip=True)
+                # Limit length to avoid exceeding token limits (approx 4000 chars)
+                if len(text) > 8000:
+                    text = text[:8000]
+
+                # Prepare prompt
+                prompt = f"{system_instruction}\n\nJob Title: {job.get('title', '')}\n\nPage Content:\n{text}"
+
+                # Call Gemini
+                response = model.generate_content(prompt)
+                result_text = response.text.strip()
+
+                # Try to parse JSON
+                import json
+                # Find JSON block
+                start = result_text.find('{')
+                end = result_text.rfind('}')
+                if start != -1 and end != -1 and start < end:
+                    json_str = result_text[start:end+1]
+                    data = json.loads(json_str)
+                    total_vacancies = data.get('total_vacancies', 'Not specified')
+                    official_apply_link = data.get('official_apply_link', job.get('link', ''))
+                    # Ensure official_apply_link is a string
+                    if not isinstance(official_apply_link, str):
+                        official_apply_link = str(official_apply_link)
+                else:
+                    # Fallback: try to extract lines
+                    lines = result_text.split('\n')
+                    for line in lines:
+                        if 'total_vacancies' in line.lower():
+                            # naive extraction
+                            pass
+        except Exception as e:
+            print(f"Gemini processing error for {job.get('title')}: {e}")
+
         processed_job = {
             'title': job.get('title', ''),
             'organization': org,
-            'total_vacancies': 'Not specified',
+            'total_vacancies': total_vacancies,
             'start_date': None,
             'last_date': '2026-12-31',
             'fee_details': 'As per official notification',
             'eligibility': 'Not specified',
-            'official_apply_link': job.get('link', '')
+            'official_apply_link': official_apply_link
         }
-        print(f'AI processed: {processed_job["title"]} -> {processed_job["official_apply_link"]}')
+        print(f'AI processed: {processed_job["title"]} -> vacancies: {processed_job["total_vacancies"]}, link: {processed_job["official_apply_link"]}')
         processed_jobs.append(processed_job)
-    
+
     return processed_jobs
 
 def insert_job(job: Dict[str, Any]) -> bool:
