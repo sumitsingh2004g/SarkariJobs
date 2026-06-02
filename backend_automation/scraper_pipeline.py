@@ -103,8 +103,13 @@ def crawl_deep(
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        if current_depth == MAX_DEPTH:
-            content = extract_table_data(soup) + '\n' + extract_main_content(soup)
+        content = extract_table_data(soup) + '\n' + extract_main_content(soup)
+        valid_content = content.strip() and len(content.strip()) > 50
+        
+        if current_depth == MAX_DEPTH and valid_content:
+            return {'title': title, 'link': url, 'content_for_gemini': content[:4000]}
+        
+        if current_depth == MAX_DEPTH - 1 and valid_content:
             return {'title': title, 'link': url, 'content_for_gemini': content[:4000]}
         
         candidate_links = []
@@ -118,7 +123,7 @@ def crawl_deep(
                         txt = a.get_text(strip=True)
                         if href and txt and len(txt) >= 30 and not is_navbar_title(txt):
                             full = href if href.startswith('http') else urljoin(base_domain, href)
-                            if not is_navbar_url(full):
+                            if not is_navbar_url(full) and full not in visited:
                                 candidate_links.append({'url': full, 'text': txt})
         
         for a in soup.find_all('a', href=True):
@@ -134,8 +139,11 @@ def crawl_deep(
             if link['url'] not in seen:
                 seen.add(link['url'])
                 result = crawl_deep(link['url'], base_domain, current_depth + 1, visited.copy(), link['text'])
-                if result:
+                if result and result.get('content_for_gemini'):
                     return result
+        
+        if valid_content and current_depth >= 1:
+            return {'title': title, 'link': url, 'content_for_gemini': content[:4000]}
         
         return None
         
