@@ -1,8 +1,11 @@
 import os
 import json
 import time
+import random
+import re
 from datetime import date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from urllib.parse import urljoin, urlparse
 
 from curl_cffi import requests
 from bs4 import BeautifulSoup
@@ -23,15 +26,76 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
 
-ORGANIZATION_MAPPING = {
-    'SSC': ['ssc', 'staff selection commission'],
-    'UPSC': ['upsc', 'union public service commission'],
-    'Railways': ['railway', 'rpf', 'rrb'],
-    'Banking': ['bank', 'ibps', 'sbi', 'po'],
-    'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
-}
+MAX_DEPTH = 2
+POLITE_DELAY_MIN = 2
+POLITE_DELAY_MAX = 3
+
+IGNORED_URL_PATTERNS = [
+    r'about[-_]?us',
+    r'privacy[-_]?policy',
+    r'terms[-_]?and[-_]?conditions',
+    r'contact[-_]?us',
+    r'sitemap',
+    r'rss',
+    r'feed',
+    r'\.pdf$',
+    r'facebook\.com',
+    r'twitter\.com',
+    r'instagram\.com',
+    r'linkedin\.com',
+    r'youtube\.com',
+    r'share',
+    r'wp-content',
+    r'wp-admin',
+    r'#',
+    r'javascript:',
+]
+
+JOB_URL_PATTERNS = [
+    r'recruitment',
+    r'vacancy',
+    r'notification',
+    r'exam',
+    r'admit[-_]?card',
+    r'2024',
+    r'2025',
+    r'2026',
+    r'sarkari',
+    r'job',
+    r'post',
+    r'apply',
+    r'online[-_]?apply',
+    r'official',
+]
+
+def polite_delay():
+    delay = random.uniform(POLITE_DELAY_MIN, POLITE_DELAY_MAX)
+    time.sleep(delay)
+
+def is_ignored_url(url: str) -> bool:
+    url_lower = url.lower()
+    for pattern in IGNORED_URL_PATTERNS:
+        if re.search(pattern, url_lower):
+            return True
+    return False
+
+def is_job_related_url(url: str, text: str) -> bool:
+    if is_ignored_url(url):
+        return False
+    combined = (url + ' ' + text).lower()
+    for pattern in JOB_URL_PATTERNS:
+        if re.search(pattern, combined):
+            return True
+    return False
 
 def normalize_organization(text: str) -> str:
+    ORGANIZATION_MAPPING = {
+        'SSC': ['ssc', 'staff selection commission'],
+        'UPSC': ['upsc', 'union public service commission'],
+        'Railways': ['railway', 'rpf', 'rrb'],
+        'Banking': ['bank', 'ibps', 'sbi', 'po'],
+        'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
+    }
     if not text:
         return 'Other'
     text_lower = text.lower()
@@ -41,276 +105,287 @@ def normalize_organization(text: str) -> str:
                 return org
     return 'Other'
 
-def scrape_sarkari_result() -> List[Dict[str, Any]]:
-    jobs = []
+def extract_table_text(soup: BeautifulSoup) -> str:
+    tables = soup.find_all('table')
+    extracted = []
+    for table in tables:
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+            if cells:
+                rows.append(' | '.join(cells))
+        if rows:
+            extracted.append('\n'.join(rows))
+    return '\n\n'.join(extracted)
+
+def extract_article_text(soup: BeautifulSoup) -> str:
+    for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'nav']):
+        tag.decompose()
     
-    urls_to_try = [
-        'https://www.sarkariresult.com/latestjob/',
-        'https://www.sarkariresult.com/rss.php',
-    ]
+    article = soup.find(['article', 'main', 'div.content', 'div.entry-content', 'div.post-content'])
+    if article:
+        return article.get_text(separator=' ', strip=True)
     
-    for url in urls_to_try:
-        try:
-            response = requests.get(url, impersonate="chrome", timeout=15)
+    candidates = []
+    for p in soup.find_all('p'):
+        text = p.get_text(strip=True)
+        if len(text) > 50:
+            candidates.append(text)
+    if candidates:
+        return '\n'.join(candidates[:20])
+    
+    return soup.get_text(separator=' ', strip=True)
+
+def extract_targeted_content(soup: BeautifulSoup) -> str:
+    table_text = extract_table_text(soup)
+    article_text = extract_article_text(soup)
+    
+    if table_text and len(table_text) > 100:
+        return f"TABLE DATA:\n{table_text}\n\nARTICLE TEXT:\n{article_text[:2000]}"
+    
+    return article_text[:4000]
+
+def crawl_page(
+    url: str,
+    base_domain: str,
+    current_depth: int,
+    visited_urls: set,
+    parent_title: str = ''
+) -> Optional[Dict[str, Any]]:
+    if current_depth > MAX_DEPTH:
+        return None
+    
+    if url in visited_urls:
+        return None
+    
+    visited_urls.add(url)
+    
+    try:
+        print(f"[Depth {current_depth}] Crawling: {url}")
+        response = requests.get(url, impersonate="chrome", timeout=15)
+        polite_delay()
+        
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        if current_depth == MAX_DEPTH:
+            content = extract_targeted_content(soup)
+            return {
+                'title': parent_title,
+                'link': url,
+                'content_for_gemini': content,
+                'depth': current_depth
+            }
+        
+        job_links = []
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            link_text = link.get_text(strip=True)
             
-            print(f'sarkariresult ({url}): Status {response.status_code}')
+            if not href or not link_text or len(link_text) < 10:
+                continue
+            
+            if href.startswith('#') or href.startswith('javascript:'):
+                continue
+            
+            full_url = urljoin(base_domain, href) if not href.startswith('http') else href
+            
+            if urlparse(full_url).netloc != urlparse(base_domain).netloc:
+                continue
+            
+            if is_job_related_url(full_url, link_text):
+                job_links.append({'url': full_url, 'text': link_text})
+        
+        results = []
+        for job_link in job_links[:3]:
+            result = crawl_page(
+                job_link['url'],
+                base_domain,
+                current_depth + 1,
+                visited_urls.copy(),
+                job_link['text']
+            )
+            if result:
+                results.append(result)
+        
+        if results:
+            best_result = results[0]
+            content = extract_targeted_content(soup)
+            best_result['content_for_gemini'] = content
+            return best_result
+        
+        if current_depth == 0:
+            return None
+        
+        content = extract_targeted_content(soup)
+        return {
+            'title': parent_title,
+            'link': url,
+            'content_for_gemini': content,
+            'depth': current_depth
+        }
+        
+    except Exception as e:
+        print(f"Crawl error at depth {current_depth} for {url}: {type(e).__name__}: {e}")
+        return None
+
+def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
+    jobs = []
+    base_urls = ['https://www.freejobalert.com/', 'https://freejobalert.com/']
+    
+    for base_url in base_urls:
+        try:
+            response = requests.get(base_url, impersonate="chrome", timeout=15)
+            polite_delay()
+            
+            print(f'freejobalert deep ({base_url}): Status {response.status_code}')
             
             if response.status_code != 200:
                 continue
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            for div in soup.find_all(['div', 'table'], class_=lambda x: x and any(k in str(x).lower() for k in ['latestjob', 'job', 'list', 'content', 'post'])):
-                for link in div.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        href = link['href']
-                        full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {full_url}',
-                            'link': full_url
-                        })
-            
-            for tr in soup.find_all('tr'):
-                for link in tr.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        href = link['href']
-                        full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {full_url}',
-                            'link': full_url
-                        })
+            job_links = []
             
             for link in soup.find_all('a', href=True):
-                title = link.get_text(strip=True)
-                if title and len(title) >= 15 and any(k in title.lower() for k in ['recruitment', '2024', '2025', '2026', 'vacancy', 'notification', 'exam']):
-                    href = link['href']
-                    full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                    jobs.append({
-                        'title': title,
-                        'raw_content': f'Title: {title}\nLink: {full_url}',
-                        'link': full_url
-                    })
-            
-            print(f'sarkariresult ({url}): Found {len(jobs)} listings')
-            if jobs:
-                return jobs[:20]
-        except Exception as e:
-            print(f'sarkariresult ({url}) error: {type(e).__name__}: {e}')
-        time.sleep(2)
-    
-    return jobs[:20]
-
-def scrape_freejobalert() -> List[Dict[str, Any]]:
-    jobs = []
-    
-    urls = ['https://www.freejobalert.com/', 'https://freejobalert.com/']
-    
-    for url in urls:
-        try:
-            response = requests.get(url, impersonate="chrome", timeout=15)
-            
-            print(f'freejobalert ({url}): Status {response.status_code}')
-            
-            if response.status_code != 200:
-                continue
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
+                href = link['href']
+                text = link.get_text(strip=True)
+                
+                if href and text and len(text) >= 10:
+                    full_url = href if href.startswith('http') else urljoin(base_url, href)
+                    if is_job_related_url(full_url, text):
+                        job_links.append({'url': full_url, 'text': text})
             
             for tr in soup.find_all('tr'):
                 row_text = tr.get_text()
-                if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'notification', '2024', '2025', '2026', 'apply']):
+                if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'notification']):
                     for link in tr.find_all('a', href=True):
                         title = link.get_text(strip=True)
                         if title and len(title) >= 10:
                             href = link['href']
-                            full_url = href if href.startswith('http') else f'https://freejobalert.com{href}'
-                            jobs.append({
-                                'title': title,
-                                'raw_content': f'Title: {title}\nLink: {full_url}',
-                                'link': full_url
-                            })
+                            full_url = href if href.startswith('http') else urljoin(base_url, href)
+                            job_links.append({'url': full_url, 'text': title})
             
-            print(f'freejobalert ({url}): Found {len(jobs)} listings via BeautifulSoup')
+            for job_link in job_links[:10]:
+                result = crawl_page(
+                    job_link['url'],
+                    base_url,
+                    current_depth=1,
+                    visited_urls=set(),
+                    parent_title=job_link['text']
+                )
+                if result and result.get('content_for_gemini'):
+                    jobs.append({
+                        'title': result['title'],
+                        'link': result['link'],
+                        'content_for_gemini': result['content_for_gemini']
+                    })
+                    if len(jobs) >= 15:
+                        break
+            
             if jobs:
-                return jobs[:20]
+                break
+                
         except Exception as e:
-            print(f'freejobalert ({url}) error: {type(e).__name__}: {e}')
-        time.sleep(2)
+            print(f'freejobalert deep error: {type(e).__name__}: {e}')
     
-    return jobs[:20]
+    return jobs
 
-def scrape_sarkari_exams() -> List[Dict[str, Any]]:
+def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
     jobs = []
+    base_urls = ['https://www.sarkariresult.com/latestjob/']
     
-    urls = ['https://www.sarkariexams.com/', 'https://sarkariexams.com/']
-    
-    for url in urls:
+    for base_url in base_urls:
         try:
-            response = requests.get(url, impersonate="chrome", timeout=15)
+            response = requests.get(base_url, impersonate="chrome", timeout=15)
+            polite_delay()
             
-            print(f'sarkariexams ({url}): Status {response.status_code}')
+            print(f'sarkariresult deep ({base_url}): Status {response.status_code}')
             
             if response.status_code != 200:
                 continue
             
             soup = BeautifulSoup(response.text, 'html.parser')
+            job_links = []
             
-            for h in soup.find_all(['h2', 'h3', 'h4']):
-                text = h.get_text(strip=True)
-                if text and len(text) >= 15 and any(k in text.lower() for k in ['recruitment', 'vacancy', '2024', '2025', '2026', 'exam', 'notification']):
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                text = link.get_text(strip=True)
+                
+                if href and text and len(text) >= 10:
+                    full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
+                    if is_job_related_url(full_url, text):
+                        job_links.append({'url': full_url, 'text': text})
+            
+            for job_link in job_links[:10]:
+                result = crawl_page(
+                    job_link['url'],
+                    base_url,
+                    current_depth=1,
+                    visited_urls=set(),
+                    parent_title=job_link['text']
+                )
+                if result and result.get('content_for_gemini'):
                     jobs.append({
-                        'title': text,
-                        'raw_content': f'Title: {text}\nLink: {url}',
-                        'link': url
+                        'title': result['title'],
+                        'link': result['link'],
+                        'content_for_gemini': result['content_for_gemini']
                     })
-            
-            print(f'sarkariexams ({url}): Found {len(jobs)} listings via BeautifulSoup')
+                    if len(jobs) >= 15:
+                        break
+                        
             if jobs:
-                return jobs[:15]
+                break
+                
         except Exception as e:
-            print(f'sarkariexams ({url}) error: {type(e).__name__}: {e}')
-        time.sleep(2)
+            print(f'sarkariresult deep error: {type(e).__name__}: {e}')
     
-    return jobs[:15]
-
-def scrape_indeed_govt() -> List[Dict[str, Any]]:
-    jobs = []
-    
-    url = 'https://in.indeed.com/jobs?q=government+jobs&jt=fulltime'
-    
-    try:
-        response = requests.get(url, impersonate="chrome", timeout=15)
-        
-        print(f'indeed govt ({url}): Status {response.status_code}')
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            for h in soup.find_all(['h2', 'h3']):
-                text = h.get_text(strip=True)
-                if text and len(text) >= 15 and any(k in text.lower() for k in ['government', 'recruitment', 'vacancy']):
-                    jobs.append({
-                        'title': text,
-                        'raw_content': f'Title: {text}\nLink: {url}',
-                        'link': url
-                    })
-            
-            print(f'indeed govt: Found {len(jobs)} listings')
-            return jobs[:15]
-    except Exception as e:
-        print(f'indeed govt error: {type(e).__name__}: {e}')
-    
-    return jobs[:15]
-
-def scrape_joberr_govt() -> List[Dict[str, Any]]:
-    jobs = []
-    
-    url = 'https://www.joberr.com/govt-jobs'
-    
-    try:
-        response = requests.get(url, impersonate="chrome", timeout=15)
-        
-        print(f'joberr ({url}): Status {response.status_code}')
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            for div in soup.find_all(['div', 'article'], class_=lambda x: x and any(k in str(x).lower() for k in ['job', 'post', 'entry'])):
-                for link in div.find_all('a', href=True):
-                    title = link.get_text(strip=True)
-                    if title and len(title) >= 10:
-                        href = link['href']
-                        full_url = href if href.startswith('http') else f'https://www.joberr.com{href}'
-                        jobs.append({
-                            'title': title,
-                            'raw_content': f'Title: {title}\nLink: {full_url}',
-                            'link': full_url
-                        })
-            
-            print(f'joberr: Found {len(jobs)} listings')
-            return jobs[:15]
-    except Exception as e:
-        print(f'joberr error: {type(e).__name__}: {e}')
-    
-    return jobs[:15]
+    return jobs
 
 def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
         return []
-
+    
     processed_jobs = []
-    model = genai.GenerativeModel('gemini-1.5-flash')  # or pro
-
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     system_instruction = (
         "You are an expert at extracting structured information from Indian government job recruitment notices. "
-        "Given the full text of a job vacancy inner page, extract:\n"
-        "1. total_vacancies: Look explicitly for fields like 'Total Vacancy', 'Total Posts', or table cells indicating numbers (e.g., '1400+'). "
+        "Given the extracted table and article content, extract:\n"
+        "1. total_vacancies: Look explicitly for fields like 'Total Vacancy', 'Total Posts', or numbers in table cells (e.g., '1400+'). "
         "If a breakdown is provided (e.g., 'Category-wise: 100 UR, 50 OBC, ...'), sum them or take the total if explicitly stated. "
-        "Do NOT default to 'Not specified' if the text contains any numeric vacancy information. "
-        "If no vacancy number can be found, return 'Not specified'.\n"
+        "Do NOT default to 'Not specified' if the text contains any numeric vacancy information.\n"
         "2. official_apply_link: Locate and extract the actual government official website domain or registration link. "
-        "Look for links containing '.gov.in', '.nic.in', or text explicitly labeled 'Official Website Link', 'Apply Online', 'Registration Link', etc. "
-        "If multiple such links exist, prefer the one that appears to be the official application portal. "
-        "Do NOT return the source page URL (e.g., freejobalert.com). If no official link is found, return the source page URL as fallback.\n"
-        "Return your answer as a JSON object with exactly two keys: 'total_vacancies' (string) and 'official_apply_link' (string). "
-        "Do not include any extra text."
+        "Look for links containing '.gov.in', '.nic.in', or text labeled 'Official Website Link', 'Apply Online', 'Registration Link', etc.\n"
+        "Return JSON with exactly: 'total_vacancies' (string) and 'official_apply_link' (string)."
     )
-
+    
     for job in raw_jobs:
         org = normalize_organization(job.get('title', ''))
-        # Default values
         total_vacancies = 'Not specified'
-        official_apply_link = job.get('link', '')  # fallback to source link
-
+        official_apply_link = job.get('link', '')
+        
         try:
-            # Fetch inner page
-            resp = requests.get(job['link'], impersonate="chrome", timeout=15)
-            if resp.status_code == 200:
-                # Extract text
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                # Remove script/style
-                for tag in soup(['script', 'style', 'noscript']):
-                    tag.decompose()
-                text = soup.get_text(separator=' ', strip=True)
-                # Limit length to avoid exceeding token limits (approx 4000 chars)
-                if len(text) > 8000:
-                    text = text[:8000]
-
-                # Prepare prompt
-                prompt = f"{system_instruction}\n\nJob Title: {job.get('title', '')}\n\nPage Content:\n{text}"
-
-                # Call Gemini
-                response = model.generate_content(prompt)
-                result_text = response.text.strip()
-
-                # Try to parse JSON
-                import json
-                # Find JSON block
-                start = result_text.find('{')
-                end = result_text.rfind('}')
-                if start != -1 and end != -1 and start < end:
-                    json_str = result_text[start:end+1]
-                    data = json.loads(json_str)
-                    total_vacancies = data.get('total_vacancies', 'Not specified')
-                    official_apply_link = data.get('official_apply_link', job.get('link', ''))
-                    # Ensure official_apply_link is a string
-                    if not isinstance(official_apply_link, str):
-                        official_apply_link = str(official_apply_link)
-                else:
-                    # Fallback: try to extract lines
-                    lines = result_text.split('\n')
-                    for line in lines:
-                        if 'total_vacancies' in line.lower():
-                            # naive extraction
-                            pass
+            prompt = f"{system_instruction}\n\nJob Title: {job.get('title', '')}\n\nExtracted Content:\n{job.get('content_for_gemini', '')}"
+            
+            response = model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            start = result_text.find('{')
+            end = result_text.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = result_text[start:end+1]
+                data = json.loads(json_str)
+                total_vacancies = data.get('total_vacancies', 'Not specified')
+                official_apply_link = data.get('official_apply_link', job.get('link', ''))
+                if not isinstance(official_apply_link, str):
+                    official_apply_link = str(official_apply_link)
+                    
         except Exception as e:
-            print(f"Gemini processing error for {job.get('title')}: {e}")
-
-        processed_job = {
+            print(f"Gemini error for {job.get('title')}: {e}")
+        
+        processed_jobs.append({
             'title': job.get('title', ''),
             'organization': org,
             'total_vacancies': total_vacancies,
@@ -319,10 +394,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             'fee_details': 'As per official notification',
             'eligibility': 'Not specified',
             'official_apply_link': official_apply_link
-        }
-        print(f'AI processed: {processed_job["title"]} -> vacancies: {processed_job["total_vacancies"]}, link: {processed_job["official_apply_link"]}')
-        processed_jobs.append(processed_job)
-
+        })
+    
     return processed_jobs
 
 def insert_job(job: Dict[str, Any]) -> bool:
@@ -362,37 +435,34 @@ def cleanup_expired_jobs() -> int:
         return 0
 
 def main():
-    print('Starting Sarkari Jobs pipeline...')
+    print('Starting Deep Crawler Sarkari Jobs pipeline...')
     
     all_jobs = []
-    all_jobs.extend(scrape_sarkari_result())
-    time.sleep(2)
-    all_jobs.extend(scrape_freejobalert())
-    time.sleep(2)
-    all_jobs.extend(scrape_sarkari_exams())
-    time.sleep(2)
-    all_jobs.extend(scrape_indeed_govt())
-    time.sleep(2)
-    all_jobs.extend(scrape_joberr_govt())
+    
+    print('Scraping FreeJobAlert (deep mode)...')
+    all_jobs.extend(scrape_freejobalert_deep())
+    
+    print('Scraping SarkariResult (deep mode)...')
+    all_jobs.extend(scrape_sarkari_result_deep())
     
     total_scraped = len(all_jobs)
-    print(f'Total scraped: {total_scraped} listings')
+    print(f'Total scraped: {total_scraped} job pages')
     
     if total_scraped == 0:
-        print('No jobs scraped - adding test connection job - Run V2')
+        print('No jobs scraped - adding test connection job')
         all_jobs.append({
-            'title': f'Test Connection Job - Run V2 - {int(time.time())}',
+            'title': f'Test Connection Job - DeepCrawler - {int(time.time())}',
             'organization': 'System Test',
             'total_vacancies': '1',
             'start_date': None,
             'last_date': '2026-12-31',
             'fee_details': 'Free',
             'eligibility': 'Test',
-            'official_apply_link': 'https://example.com'
+            'official_apply_link': 'https://example.com',
+            'content_for_gemini': ''
         })
-        processed_jobs = all_jobs
-    else:
-        processed_jobs = process_with_gemini(all_jobs)
+    
+    processed_jobs = process_with_gemini(all_jobs)
     
     if not processed_jobs:
         print('No jobs processed - exiting')
