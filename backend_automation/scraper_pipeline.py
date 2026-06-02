@@ -29,79 +29,25 @@ MAX_DEPTH = 2
 POLITE_DELAY_MIN = 2
 POLITE_DELAY_MAX = 3
 
-NAVBAR_SELECTOR_PATTERNS = [
-    r'home', r'about', r'contact', r'privacy', r'terms', r'sitemap',
-    r'facebook', r'twitter', r'instagram', r'linkedin', r'youtube',
-    r'wp-content', r'wp-admin', r'rss', r'feed', r'sitemap\.xml'
+SPAM_TITLE_PATTERNS = [
+    r'^freejobalert$', r'^sarkari result$', r'^home$', r'^click here$',
+    r'^apply online$', r'^view notification$'
 ]
 
 def polite_delay():
     delay = random.uniform(POLITE_DELAY_MIN, POLITE_DELAY_MAX)
     time.sleep(delay)
 
-def is_navbar_or_menu_link(soup: BeautifulSoup, link) -> bool:
-    parent_classes = []
-    parent = link.parent
-    while parent and parent != soup:
-        if parent.get('class'):
-            parent_classes.extend(parent['class'])
-        parent = parent.parent
-    
-    parent_texts = ' '.join(parent_classes).lower()
-    for pattern in NAVBAR_SELECTOR_PATTERNS:
-        if re.search(pattern, parent_texts):
-            return True
-    
-    href = link.get('href', '')
-    if re.search(r'(?:^/|^#)(home|about|contact|privacy|terms)', href, re.I):
-        return True
-    
-    return False
-
-def is_valid_job_detail_url(url: str, link_text: str) -> bool:
-    if not url or not link_text:
-        return False
-    
-    url_lower = url.lower()
-    text_lower = link_text.lower()
-    
-    if any(re.search(p, url_lower) for p in NAVBAR_SELECTOR_PATTERNS):
-        return False
-    
-    if '#' in url or 'javascript:' in url:
-        return False
-    
-    if re.search(r'\.pdf$', url):
-        return False
-    
-    job_pattern = r'\b(2024|2025|2026|2027|2028)\b'
-    if not re.search(job_pattern, text_lower):
-        if not re.search(r'\b(recruitment|vacancy|notification|online|apply)\b', text_lower):
-            return False
-    
-    spam_patterns = ['freejobalert\.com', 'sarkari result', 'home', 'click here']
-    if any(spam.lower() in text_lower for spam in spam_patterns):
-        if len(text_lower) < 50:
-            return False
-    
-    return True
-
-def normalize_organization(text: str) -> str:
-    ORGANIZATION_MAPPING = {
-        'SSC': ['ssc', 'staff selection commission'],
-        'UPSC': ['upsc', 'union public service commission'],
-        'Railways': ['railway', 'rpf', 'rrb'],
-        'Banking': ['bank', 'ibps', 'sbi', 'po'],
-        'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
-    }
+def is_spam_or_navbar_title(text: str) -> bool:
     if not text:
-        return 'Other'
-    text_lower = text.lower()
-    for org, keywords in ORGANIZATION_MAPPING.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                return org
-    return 'Other'
+        return True
+    text_clean = text.strip().lower()
+    for pattern in SPAM_TITLE_PATTERNS:
+        if re.match(pattern, text_clean):
+            return True
+    if len(text_clean) < 20 and any(x in text_clean for x in ['com', 'home', 'click', 'here']):
+        return True
+    return False
 
 def extract_vacancy_info(soup: BeautifulSoup) -> str:
     vacancy_texts = []
@@ -131,7 +77,7 @@ def extract_article_content(soup: BeautifulSoup) -> str:
     paragraphs = []
     for p in soup.find_all('p'):
         text = p.get_text(strip=True)
-        if len(text) > 30 and not any(x in text.lower() for x in ['click here', 'follow us', 'subscribe', 'disclaimer']):
+        if len(text) > 30 and not any(x in text.lower() for x in ['click here', 'follow us', 'subscribe', 'disclaimer', 'privacy', 'terms']):
             paragraphs.append(text)
     
     return '\n'.join(paragraphs[:15])
@@ -161,8 +107,9 @@ def crawl_page(
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        content = extract_vacancy_info(soup) + '\n' + extract_article_content(soup)
+        
         if current_depth == MAX_DEPTH:
-            content = extract_vacancy_info(soup) + '\n' + extract_article_content(soup)
             return {
                 'title': link_text,
                 'link': url,
@@ -175,16 +122,19 @@ def crawl_page(
             href = link['href']
             text = link.get_text(strip=True)
             
-            if not text or len(text) < 15:
+            if not text or len(text) < 25:
                 continue
             
-            if is_navbar_or_menu_link(soup, link):
+            if is_spam_or_navbar_title(text):
                 continue
             
-            if not is_valid_job_detail_url(href, text):
+            if '#' in href or 'javascript:' in href:
                 continue
             
-            full_url = urljoin(base_domain, href) if not href.startswith('http') else href
+            if href.startswith('http'):
+                full_url = href
+            else:
+                full_url = urljoin(base_domain, href)
             
             parsed_full = urlparse(full_url)
             parsed_base = urlparse(base_domain)
@@ -204,7 +154,7 @@ def crawl_page(
                 visited_urls.copy(),
                 job_link['text']
             )
-            if result:
+            if result and result.get('content_for_gemini'):
                 return result
         
         return None
@@ -230,32 +180,23 @@ def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
             soup = BeautifulSoup(response.text, 'html.parser')
             job_links = []
             
+            for tr in soup.find_all('tr'):
+                row_text = tr.get_text(separator=' ', strip=True)
+                if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'notification', 'apply', 'online']):
+                    for link in tr.find_all('a', href=True):
+                        title = link.get_text(strip=True)
+                        href = link['href']
+                        if href and title and len(title) >= 25 and not is_spam_or_navbar_title(title):
+                            full_url = href if href.startswith('http') else urljoin(base_url, href)
+                            job_links.append({'url': full_url, 'text': title})
+            
             for link in soup.find_all('a', href=True):
                 href = link['href']
                 text = link.get_text(strip=True)
                 
-                if not text or len(text) < 15:
-                    continue
-                
-                if is_navbar_or_menu_link(soup, link):
-                    continue
-                
-                if not is_valid_job_detail_url(href, text):
-                    continue
-                
-                full_url = href if href.startswith('http') else urljoin(base_url, href)
-                job_links.append({'url': full_url, 'text': text})
-            
-            for tr in soup.find_all('tr'):
-                row_text = tr.get_text(separator=' ', strip=True)
-                if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'notification', '2024', '2025', '2026']):
-                    for link in tr.find_all('a', href=True):
-                        title = link.get_text(strip=True)
-                        href = link['href']
-                        if href and title and len(title) >= 15 and not is_navbar_or_menu_link(soup, link):
-                            full_url = href if href.startswith('http') else urljoin(base_url, href)
-                            if is_valid_job_detail_url(full_url, title):
-                                job_links.append({'url': full_url, 'text': title})
+                if href and text and len(text) >= 25 and not is_spam_or_navbar_title(text):
+                    full_url = href if href.startswith('http') else urljoin(base_url, href)
+                    job_links.append({'url': full_url, 'text': text})
             
             seen_urls = set()
             for job_link in job_links[:10]:
@@ -304,21 +245,23 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
             soup = BeautifulSoup(response.text, 'html.parser')
             job_links = []
             
+            for tr in soup.find_all('tr'):
+                row_text = tr.get_text(separator=' ', strip=True)
+                if any(k in row_text.lower() for k in ['recruitment', 'vacancy', 'notification', '2024', '2025', '2026', 'apply']):
+                    for link in tr.find_all('a', href=True):
+                        title = link.get_text(strip=True)
+                        href = link['href']
+                        if href and title and len(title) >= 25 and not is_spam_or_navbar_title(title):
+                            full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
+                            job_links.append({'url': full_url, 'text': title})
+            
             for link in soup.find_all('a', href=True):
                 href = link['href']
                 text = link.get_text(strip=True)
                 
-                if not text or len(text) < 15:
-                    continue
-                
-                if is_navbar_or_menu_link(soup, link):
-                    continue
-                
-                if not is_valid_job_detail_url(href, text):
-                    continue
-                
-                full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                job_links.append({'url': full_url, 'text': text})
+                if href and text and len(text) >= 25 and not is_spam_or_navbar_title(text):
+                    full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
+                    job_links.append({'url': full_url, 'text': text})
             
             seen_urls = set()
             for job_link in job_links[:10]:
@@ -349,6 +292,23 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
             print(f'sarkariresult error: {type(e).__name__}: {e}')
     
     return jobs
+
+def normalize_organization(text: str) -> str:
+    ORGANIZATION_MAPPING = {
+        'SSC': ['ssc', 'staff selection commission'],
+        'UPSC': ['upsc', 'union public service commission'],
+        'Railways': ['railway', 'rpf', 'rrb'],
+        'Banking': ['bank', 'ibps', 'sbi', 'po'],
+        'Defence': ['defence', 'nda', 'cds', 'navy', 'army']
+    }
+    if not text:
+        return 'Other'
+    text_lower = text.lower()
+    for org, keywords in ORGANIZATION_MAPPING.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return org
+    return 'Other'
 
 def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
