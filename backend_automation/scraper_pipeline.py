@@ -67,8 +67,6 @@ def is_navbar_title(text: str) -> bool:
     if not text:
         return True
     t = text.strip().lower()
-    if len(t) < 15:
-        return True
     for kw in NAVBAR_TEXT_PATTERNS:
         if t == kw or t.startswith(kw + ' ') or t.endswith(' ' + kw):
             return True
@@ -118,7 +116,7 @@ def crawl_deep(
                     for a in tr.find_all('a', href=True):
                         href = a['href']
                         txt = a.get_text(strip=True)
-                        if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
+                        if href and txt and len(txt) >= 30 and not is_navbar_title(txt):
                             full = href if href.startswith('http') else urljoin(base_domain, href)
                             if not is_navbar_url(full):
                                 candidate_links.append({'url': full, 'text': txt})
@@ -126,7 +124,7 @@ def crawl_deep(
         for a in soup.find_all('a', href=True):
             href = a['href']
             txt = a.get_text(strip=True)
-            if href and txt and len(txt) >= 20 and not is_navbar_title(txt) and not is_navbar_url(href):
+            if href and txt and len(txt) >= 30 and not is_navbar_title(txt) and not is_navbar_url(href):
                 full = href if href.startswith('http') else urljoin(base_domain, href)
                 if urlparse(full).netloc == urlparse(base_domain).netloc and full not in visited:
                     candidate_links.append({'url': full, 'text': txt})
@@ -169,7 +167,7 @@ def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
                     for a in tr.find_all('a', href=True):
                         href = a['href']
                         txt = a.get_text(strip=True)
-                        if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
+                        if href and txt and len(txt) >= 30 and not is_navbar_title(txt):
                             full = href if href.startswith('http') else urljoin(base, href)
                             if not is_navbar_url(full):
                                 link_candidates.append({'url': full, 'text': txt})
@@ -217,7 +215,7 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
                 for a in tr.find_all('a', href=True):
                     href = a['href']
                     txt = a.get_text(strip=True)
-                    if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
+                    if href and txt and len(txt) >= 30 and not is_navbar_title(txt):
                         full = href if href.startswith('http') else f'https://sarkariresult.com{href}'
                         if not is_navbar_url(full):
                             link_candidates.append({'url': full, 'text': txt})
