@@ -29,31 +29,11 @@ MAX_DEPTH = 2
 POLITE_DELAY_MIN = 2
 POLITE_DELAY_MAX = 3
 
-JOB_TITLE_MIN_LENGTH = 30
-SPAM_KEYWORDS = ['home', 'about', 'privacy', 'terms', 'contact', 'sitemap', 'rss', 'facebook', 'twitter', 'instagram', 'linkedin', 'youtube']
-SPAM_URL_PATTERNS = [r'/about', r'/privacy', r'/contact', r'/sitemap', r'/rss', r'/feed', r'\.pdf$', r'facebook', r'twitter', r'instagram', r'linkedin', r'youtube']
+NAVBAR_TEXT_PATTERNS = ['about', 'privacy', 'terms', 'contact', 'sitemap', 'rss', 'facebook', 'twitter', 'instagram', 'linkedin', 'youtube', 'home']
 
 def polite_delay():
     delay = random.uniform(POLITE_DELAY_MIN, POLITE_DELAY_MAX)
     time.sleep(delay)
-
-def is_spam_title(text: str) -> bool:
-    if not text:
-        return True
-    t = text.strip().lower()
-    if len(t) < JOB_TITLE_MIN_LENGTH and any(kw in t for kw in SPAM_KEYWORDS):
-        return True
-    if len(t) < 15:
-        return True
-    if 'freejobalert' in t and len(t) < 50:
-        return True
-    return False
-
-def is_spam_url(url: str) -> bool:
-    for pattern in SPAM_URL_PATTERNS:
-        if re.search(pattern, url, re.IGNORECASE):
-            return True
-    return False
 
 def extract_table_data(soup: BeautifulSoup) -> str:
     tables = soup.find_all('table')
@@ -69,7 +49,7 @@ def extract_table_data(soup: BeautifulSoup) -> str:
     return '\n\n'.join(results[-3:])
 
 def extract_main_content(soup: BeautifulSoup) -> str:
-    for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'nav']):
+    for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'nav', 'aside']):
         tag.decompose()
     
     main_divs = soup.find_all('div', class_=re.compile(r'(entry|content|article|post)', re.I))
@@ -79,9 +59,26 @@ def extract_main_content(soup: BeautifulSoup) -> str:
     paragraphs = []
     for p in soup.find_all('p'):
         text = p.get_text(strip=True)
-        if len(text) > 50 and not any(x in text.lower() for x in SPAM_KEYWORDS):
+        if len(text) > 50:
             paragraphs.append(text)
     return '\n'.join(paragraphs[:10])
+
+def is_navbar_title(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip().lower()
+    if len(t) < 15:
+        return True
+    for kw in NAVBAR_TEXT_PATTERNS:
+        if t == kw or t.startswith(kw + ' ') or t.endswith(' ' + kw):
+            return True
+    return False
+
+def is_navbar_url(url: str) -> bool:
+    for kw in NAVBAR_TEXT_PATTERNS:
+        if re.search(r'/' + kw + r'(?:/|$)', url, re.IGNORECASE):
+            return True
+    return False
 
 def crawl_deep(
     url: str,
@@ -108,9 +105,8 @@ def crawl_deep(
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        content = extract_table_data(soup) + '\n' + extract_main_content(soup)
-        
         if current_depth == MAX_DEPTH:
+            content = extract_table_data(soup) + '\n' + extract_main_content(soup)
             return {'title': title, 'link': url, 'content_for_gemini': content[:4000]}
         
         candidate_links = []
@@ -118,19 +114,19 @@ def crawl_deep(
             cells = tr.find_all(['td', 'th'])
             if len(cells) >= 2:
                 cell_text = ' '.join(c.get_text(strip=True) for c in cells).lower()
-                if any(k in cell_text for k in ['notification', 'vacancy', 'recruitment', 'apply', '2024', '2025', '2026']):
+                if any(k in cell_text for k in ['recruitment', 'vacancy', 'notification', 'apply', '2024', '2025', '2026', '2027']):
                     for a in tr.find_all('a', href=True):
                         href = a['href']
                         txt = a.get_text(strip=True)
-                        if href and txt and len(txt) >= JOB_TITLE_MIN_LENGTH and not is_spam_title(txt):
+                        if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
                             full = href if href.startswith('http') else urljoin(base_domain, href)
-                            if not is_spam_url(full) and urlparse(full).netloc == urlparse(base_domain).netloc:
+                            if not is_navbar_url(full):
                                 candidate_links.append({'url': full, 'text': txt})
         
         for a in soup.find_all('a', href=True):
             href = a['href']
             txt = a.get_text(strip=True)
-            if href and txt and len(txt) >= JOB_TITLE_MIN_LENGTH and not is_spam_title(txt) and not is_spam_url(href):
+            if href and txt and len(txt) >= 20 and not is_navbar_title(txt) and not is_navbar_url(href):
                 full = href if href.startswith('http') else urljoin(base_domain, href)
                 if urlparse(full).netloc == urlparse(base_domain).netloc and full not in visited:
                     candidate_links.append({'url': full, 'text': txt})
@@ -158,6 +154,8 @@ def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
             resp = requests.get(base, impersonate="chrome", timeout=15)
             polite_delay()
             
+            print(f'freejobalert status: {resp.status_code}')
+            
             if resp.status_code != 200:
                 continue
             
@@ -167,15 +165,14 @@ def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
             for tr in soup.find_all('tr'):
                 cells = tr.find_all(['td', 'th'])
                 if len(cells) >= 2:
-                    cell_text = ' '.join(c.get_text(strip=True) for c in cells).lower()
-                    if any(k in cell_text for k in ['recruitment', 'vacancy', 'notification', '2024', '2025', '2026']):
-                        for a in tr.find_all('a', href=True):
-                            href = a['href']
-                            txt = a.get_text(strip=True)
-                            if href and txt and len(txt) >= JOB_TITLE_MIN_LENGTH and not is_spam_title(txt):
-                                full = href if href.startswith('http') else urljoin(base, href)
-                                if not is_spam_url(full):
-                                    link_candidates.append({'url': full, 'text': txt})
+                    cell_text = ' '.join(c.get_text(strip=True) for c in cells)
+                    for a in tr.find_all('a', href=True):
+                        href = a['href']
+                        txt = a.get_text(strip=True)
+                        if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
+                            full = href if href.startswith('http') else urljoin(base, href)
+                            if not is_navbar_url(full):
+                                link_candidates.append({'url': full, 'text': txt})
             
             seen = set()
             for lc in link_candidates[:12]:
@@ -208,6 +205,8 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
             resp = requests.get(base, impersonate="chrome", timeout=15)
             polite_delay()
             
+            print(f'sarkariresult status: {resp.status_code}')
+            
             if resp.status_code != 200:
                 continue
             
@@ -218,17 +217,10 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
                 for a in tr.find_all('a', href=True):
                     href = a['href']
                     txt = a.get_text(strip=True)
-                    if href and txt and len(txt) >= JOB_TITLE_MIN_LENGTH and not is_spam_title(txt):
+                    if href and txt and len(txt) >= 20 and not is_navbar_title(txt):
                         full = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                        if not is_spam_url(full):
+                        if not is_navbar_url(full):
                             link_candidates.append({'url': full, 'text': txt})
-            
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                txt = a.get_text(strip=True)
-                if href and txt and len(txt) >= JOB_TITLE_MIN_LENGTH and not is_spam_title(txt) and not is_spam_url(href):
-                    full = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                    link_candidates.append({'url': full, 'text': txt})
             
             seen = set()
             for lc in link_candidates[:12]:
@@ -273,8 +265,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     instruction = (
-        "Extract from Indian govt job notices. JSON only.\n"
-        "total_vacancies: From 'Total Vacancy', 'Total Posts', or table cells. Sum if needed.\n"
+        "Extract from Indian govt job notices. Return JSON only.\n"
+        "total_vacancies: From 'Total Vacancy', 'Total Posts', or table cell numbers (e.g., '1400+'). Sum category-wise if needed.\n"
         "official_apply_link: Extract .gov.in/.nic.in URLs or 'Apply Online' links.\n"
         "Keys: total_vacancies (string), official_apply_link (string)."
     )
