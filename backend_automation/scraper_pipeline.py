@@ -28,7 +28,7 @@ MAX_DEPTH = 2
 POLITE_DELAY_MIN = 2
 POLITE_DELAY_MAX = 3
 
-SPAM_PATTERNS = ['about', 'privacy', 'terms', 'contact', 'sitemap', 'rss', 'facebook', 'twitter', 'instagram', 'linkedin', 'youtube', 'home']
+NAVBAR_URLS = ['/about', '/privacy', '/terms', '/contact', '/sitemap', '/rss', '/feed', '/admitcard']
 
 def polite_delay():
     time.sleep(random.uniform(POLITE_DELAY_MIN, POLITE_DELAY_MAX))
@@ -37,29 +37,84 @@ def extract_clean_text(soup: BeautifulSoup) -> str:
     for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'nav', 'aside', 'svg', 'img']):
         tag.decompose()
     
-    content = soup.find(['article', 'main'])
-    if not content:
-        content = soup.find('div', class_=re.compile(r'(content|entry|post|article|main)', re.I))
+    main_content = soup.find(['article', 'main'])
+    if not main_content:
+        main_content = soup.find('div', class_=re.compile(r'(content|entry|post|article|main)', re.I))
     
-    if content:
-        text = content.get_text(separator='\n', strip=True)
-    else:
-        text = soup.get_text(separator='\n', strip=True)
+    if main_content:
+        return main_content.get_text(separator='\n', strip=True)
+    return soup.get_text(separator='\n', strip=True)
+
+def is_navbar_link(href: str) -> bool:
+    if not href:
+        return True
+    href_lower = href.lower()
+    for pattern in NAVBAR_URLS:
+        if pattern in href_lower:
+            return True
+    if re.search(r'/(home|facebook|twitter|instagram|linkedin|youtube)/', href_lower):
+        return True
+    return False
+
+def crawl_page(
+    url: str,
+    base_domain: str,
+    current_depth: int,
+    visited: set,
+    title: str
+) -> Optional[Dict[str, Any]]:
+    if current_depth > MAX_DEPTH:
+        return None
     
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    return '\n'.join(lines)
-
-def is_valid_job_url(url: str, domain: str) -> bool:
-    if not url:
-        return False
-    url_lower = url.lower()
-    for pattern in SPAM_PATTERNS:
-        if re.search(r'/' + pattern + r'(?:/|$)', url_lower):
-            return False
-    return urlparse(url).netloc == urlparse(domain).netloc
-
-def is_gov_official_url(url: str) -> bool:
-    return bool(re.search(r'\.(gov\.in|nic\.in)/?$', url, re.I))
+    if url in visited:
+        return None
+    
+    visited.add(url)
+    
+    try:
+        print(f"[Depth {current_depth}] {url}")
+        resp = requests.get(url, impersonate="chrome", timeout=15)
+        polite_delay()
+        
+        if resp.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        if current_depth == MAX_DEPTH:
+            content = extract_clean_text(soup)
+            if content and len(content.strip()) > 100:
+                return {'title': title, 'link': url, 'content_for_gemini': content[:4000]}
+            return None
+        
+        candidate_links = []
+        
+        for tr in soup.find_all('tr'):
+            cells = tr.find_all(['td', 'th'])
+            if len(cells) >= 2:
+                cell_text = ' '.join(c.get_text(strip=True) for c in cells).lower()
+                if any(k in cell_text for k in ['2024', '2025', '2026', '2027', 'recruitment', 'vacancy', 'notification']):
+                    for a in tr.find_all('a', href=True):
+                        href = a['href']
+                        txt = a.get_text(strip=True)
+                        if href and txt and len(txt) >= 20 and not is_navbar_link(href):
+                            full = href if href.startswith('http') else urljoin(base_domain, href)
+                            if urlparse(full).netloc == urlparse(base_domain).netloc:
+                                candidate_links.append({'url': full, 'text': txt})
+        
+        seen = set()
+        for link in candidate_links[:3]:
+            if link['url'] not in seen:
+                seen.add(link['url'])
+                result = crawl_page(link['url'], base_domain, current_depth + 1, visited.copy(), link['text'])
+                if result and result.get('content_for_gemini'):
+                    return result
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error depth {current_depth}: {e}")
+        return None
 
 def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
     jobs = []
@@ -73,54 +128,31 @@ def scrape_freejobalert_deep() -> List[Dict[str, Any]]:
             return jobs
         
         soup = BeautifulSoup(resp.text, 'html.parser')
-        link_candidates = []
+        initial_links = []
         
         for tr in soup.find_all('tr'):
-            cells = tr.find_all(['td', 'th'])
-            if len(cells) >= 2:
-                cell_text = ' '.join(c.get_text(strip=True) for c in cells).lower()
-                if any(k in cell_text for k in ['recruitment', 'vacancy', 'notification', 'apply', '2024', '2025', '2026', 'online']):
-                    for a in tr.find_all('a', href=True):
-                        href = a['href']
-                        txt = a.get_text(strip=True)
-                        if href and txt and len(txt) >= 25 and '/articles/' in href.lower():
-                            full = href if href.startswith('http') else urljoin(base_url, href)
-                            if is_valid_job_url(full, base_url):
-                                link_candidates.append({'url': full, 'text': txt})
-        
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            txt = a.get_text(strip=True)
-            href_lower = href.lower() if href else ''
-            if (href and txt and len(txt) >= 25 and 
-                '/articles/' in href_lower and 
-                is_valid_job_url(href, base_url) and
-                'freejobalert' not in txt.lower()):
-                full = href if href.startswith('http') else urljoin(base_url, href)
-                link_candidates.append({'url': full, 'text': txt})
+            for a in tr.find_all('a', href=True):
+                href = a['href']
+                txt = a.get_text(strip=True)
+                if href and txt and len(txt) >= 20 and '/articles/' in (href.lower() if href else ''):
+                    full = href if href.startswith('http') else urljoin(base_url, href)
+                    if not is_navbar_link(full):
+                        initial_links.append({'url': full, 'text': txt})
         
         seen = set()
-        for lc in link_candidates[:15]:
-            if lc['url'] not in seen:
-                seen.add(lc['url'])
-                try:
-                    print(f"Crawling: {lc['url']}")
-                    inner = requests.get(lc['url'], impersonate="chrome", timeout=15)
-                    polite_delay()
-                    if inner.status_code == 200:
-                        inner_soup = BeautifulSoup(inner.text, 'html.parser')
-                        clean_text = extract_clean_text(inner_soup)
-                        if clean_text and len(clean_text) > 100:
-                            jobs.append({
-                                'title': lc['text'],
-                                'link': lc['url'],
-                                'content_for_gemini': clean_text[:4000]
-                            })
-                            if len(jobs) >= 20:
-                                break
-                except Exception as e:
-                    print(f"Error: {e}")
-                    
+        for link in initial_links[:12]:
+            if link['url'] not in seen:
+                seen.add(link['url'])
+                result = crawl_page(link['url'], base_url, current_depth=1, visited=set(), title=link['text'])
+                if result and result.get('content_for_gemini'):
+                    jobs.append({
+                        'title': result['title'],
+                        'link': result['link'],
+                        'content_for_gemini': result['content_for_gemini']
+                    })
+                    if len(jobs) >= 15:
+                        break
+                        
     except Exception as e:
         print(f"Error: {e}")
     
@@ -138,51 +170,33 @@ def scrape_sarkari_result_deep() -> List[Dict[str, Any]]:
             return jobs
         
         soup = BeautifulSoup(resp.text, 'html.parser')
-        link_candidates = []
+        initial_links = []
         
         for tr in soup.find_all('tr'):
             for a in tr.find_all('a', href=True):
                 href = a['href']
                 txt = a.get_text(strip=True)
                 href_lower = (href or '').lower()
-                if href and txt and len(txt) >= 25:
-                    if re.search(r'/(202[4-9]|upsssc|ups[cs]|rrb|ssc|bank|defence|nda|navy|army)/', href_lower):
+                if href and txt and len(txt) >= 20:
+                    if re.search(r'/(202[4-9]|upsssc|ups[cs]|rrb|ssc|bank|defence|nda|navy|army|notification)/', href_lower):
                         full = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                        if is_valid_job_url(full, base_url):
-                            link_candidates.append({'url': full, 'text': txt})
-        
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            txt = a.get_text(strip=True)
-            href_lower = (href or '').lower()
-            if (href and txt and len(txt) >= 25 and
-                re.search(r'/(202[4-9]|upsssc|ups[cs]|rrb|ssc|bank|defence|nda|navy|army)/', href_lower) and
-                is_valid_job_url(href, base_url)):
-                full = href if href.startswith('http') else f'https://sarkariresult.com{href}'
-                link_candidates.append({'url': full, 'text': txt})
+                        if not is_navbar_link(full):
+                            initial_links.append({'url': full, 'text': txt})
         
         seen = set()
-        for lc in link_candidates[:15]:
-            if lc['url'] not in seen:
-                seen.add(lc['url'])
-                try:
-                    print(f"Crawling: {lc['url']}")
-                    inner = requests.get(lc['url'], impersonate="chrome", timeout=15)
-                    polite_delay()
-                    if inner.status_code == 200:
-                        inner_soup = BeautifulSoup(inner.text, 'html.parser')
-                        clean_text = extract_clean_text(inner_soup)
-                        if clean_text and len(clean_text) > 100:
-                            jobs.append({
-                                'title': lc['text'],
-                                'link': lc['url'],
-                                'content_for_gemini': clean_text[:4000]
-                            })
-                            if len(jobs) >= 20:
-                                break
-                except Exception as e:
-                    print(f"Error: {e}")
-                    
+        for link in initial_links[:12]:
+            if link['url'] not in seen:
+                seen.add(link['url'])
+                result = crawl_page(link['url'], base_url, current_depth=1, visited=set(), title=link['text'])
+                if result and result.get('content_for_gemini'):
+                    jobs.append({
+                        'title': result['title'],
+                        'link': result['link'],
+                        'content_for_gemini': result['content_for_gemini']
+                    })
+                    if len(jobs) >= 15:
+                        break
+                        
     except Exception as e:
         print(f"Error: {e}")
     
@@ -214,8 +228,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "1. title: The actual job/recruitment name (skip if generic site name)\n"
         "2. total_vacancies: Number from 'Total Vacancy', 'Total Posts', or table cells (sum category-wise if needed)\n"
         "3. apply_link: Official government URL ending in .gov.in or .nic.in\n"
-        "4. start_date: Application start date (YYYY-MM-DD format or as written)\n"
-        "5. last_date: Application deadline date (YYYY-MM-DD format or as written)\n"
+        "4. start_date: Application start date (YYYY-MM-DD or as written)\n"
+        "5. last_date: Application deadline date (YYYY-MM-DD or as written)\n"
         "6. application_fees: Fee amount or 'Not specified'\n"
         "7. eligibility: Required qualification or 'Not specified'\n"
     )
@@ -240,14 +254,10 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             data = json.loads(j)
             vac = data.get('total_vacancies', 'Not specified')
             link = data.get('apply_link', link)
-            if data.get('start_date'):
-                start = data.get('start_date')
-            if data.get('last_date'):
-                last = data.get('last_date')
-            if data.get('application_fees'):
-                fees = data.get('application_fees')
-            if data.get('eligibility'):
-                elig = data.get('eligibility')
+            start = data.get('start_date')
+            last = data.get('last_date', last)
+            fees = data.get('application_fees', fees)
+            elig = data.get('eligibility', elig)
         except Exception as e:
             print(f"Gemini error: {e}")
         
