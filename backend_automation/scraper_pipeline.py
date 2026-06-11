@@ -240,34 +240,42 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             print(f"Skipping excluded title: {title[:50]}")
             continue
         
-        try:
-            prompt = f"{instruction}\n\nJob Title: {title}\n\nPage Content:\n{job.get('content', '')[:4000]}"
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt
-            )
-            txt = response.text.strip()
-            json_match = re.search(r'\{.*\}', txt, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(0))
-            else:
-                data = {}
-            
-            govt_links = extract_govt_links(job.get('content', ''))
-            apply_link = data.get('apply_link') or (govt_links[0] if govt_links else '')
-            
-            results.append({
-                'title': data.get('title') or title,
-                'organization': normalize_organization(data.get('title') or title),
-                'total_vacancies': str(data.get('total_vacancies') or 'Not specified'),
-                'start_date': data.get('start_date'),
-                'last_date': data.get('last_date') or '2026-12-31',
-                'fee_details': str(data.get('application_fees') or 'As per official notification'),
-                'eligibility': str(data.get('eligibility') or 'As per official notification'),
-                'official_apply_link': apply_link or job.get('url', '')
-            })
-        except Exception as e:
-            print(f"Gemini error for {title[:30]}: {e}")
+        data = {}
+        for attempt in range(5):
+            try:
+                prompt = f"{instruction}\n\nJob Title: {title}\n\nPage Content:\n{job.get('content', '')[:4000]}"
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=prompt
+                )
+                txt = response.text.strip()
+                json_match = re.search(r'\{.*\}', txt, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group(0))
+                else:
+                    data = {}
+                break
+            except Exception as e:
+                if '429' in str(e) and attempt < 4:
+                    wait_time = (attempt + 1) * 20 + random.uniform(0, 5)
+                    print(f"Rate limited, waiting {wait_time:.1f}s before retry...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Gemini error for {title[:30]}: {e}")
+        
+        govt_links = extract_govt_links(job.get('content', ''))
+        apply_link = data.get('apply_link') or (govt_links[0] if govt_links else '')
+        
+        results.append({
+            'title': data.get('title') or title,
+            'organization': normalize_organization(data.get('title') or title),
+            'total_vacancies': str(data.get('total_vacancies') or 'Not specified'),
+            'start_date': data.get('start_date'),
+            'last_date': data.get('last_date') or '2026-12-31',
+            'fee_details': str(data.get('application_fees') or 'As per official notification'),
+            'eligibility': str(data.get('eligibility') or 'As per official notification'),
+            'official_apply_link': apply_link or job.get('url', '')
+        })
     
     return results
 
