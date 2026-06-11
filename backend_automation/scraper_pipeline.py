@@ -22,13 +22,14 @@ if not GEMINI_API_KEY:
     raise ValueError('GEMINI_API_KEY environment variable must be set')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 EXCLUDED_PATTERNS = [
     'freejobalert', 'sarkariresult', 'download app', 'sarkari result'
 ]
 
 def polite_delay():
-    time.sleep(random.uniform(1, 2))
+    time.sleep(random.uniform(2, 4))
 
 def extract_clean_text(soup: BeautifulSoup) -> str:
     for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'nav', 'aside', 'svg', 'img', 'iframe']):
@@ -210,8 +211,6 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_jobs:
         return []
     
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
     instruction = (
         "You are an expert data extractor for Indian government job notifications. "
         "Extract ONLY from the provided text. Return valid JSON with these exact fields:\n\n"
@@ -244,7 +243,7 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for attempt in range(5):
             try:
                 prompt = f"{instruction}\n\nJob Title: {title}\n\nPage Content:\n{job.get('content', '')[:4000]}"
-                response = client.models.generate_content(
+                response = gemini_client.models.generate_content(
                     model='gemini-2.0-flash',
                     contents=prompt
                 )
