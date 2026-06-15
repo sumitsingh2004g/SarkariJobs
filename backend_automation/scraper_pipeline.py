@@ -109,8 +109,10 @@ def scrape_freejobalert_index() -> List[Dict[str, str]]:
             return jobs
         
         soup = BeautifulSoup(resp.text, 'html.parser')
+        all_links = soup.find_all('a', href=True)
+        print(f"Found {len(all_links)} total links on page")
         
-        for a in soup.find_all('a', href=True):
+        for a in all_links:
             href = a['href']
             txt = a.get_text(strip=True)
             
@@ -129,6 +131,7 @@ def scrape_freejobalert_index() -> List[Dict[str, str]]:
                 if full_url not in seen:
                     seen.add(full_url)
                     jobs.append({'url': full_url, 'text': txt})
+        print(f"Matched {len(jobs)} job links")
         
     except Exception as e:
         print(f"Error scraping FreeJobAlert index: {e}")
@@ -149,8 +152,10 @@ def scrape_sarkariresult_index() -> List[Dict[str, str]]:
             return jobs
         
         soup = BeautifulSoup(resp.text, 'html.parser')
+        all_links = soup.find_all('a', href=True)
+        print(f"Found {len(all_links)} total links on page")
         
-        for a in soup.find_all('a', href=True):
+        for a in all_links:
             href = a['href']
             txt = a.get_text(strip=True)
             
@@ -170,6 +175,7 @@ def scrape_sarkariresult_index() -> List[Dict[str, str]]:
             if full_url not in seen:
                 seen.add(full_url)
                 jobs.append({'url': full_url, 'text': txt})
+        print(f"Matched {len(jobs)} job links")
         
     except Exception as e:
         print(f"Error scraping SarkariResult index: {e}")
