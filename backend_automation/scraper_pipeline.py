@@ -350,9 +350,9 @@ def main():
     
     if not all_raw_jobs:
         all_raw_jobs.append({
-            'text': 'Test Job',
+            'text': f'Test Job {int(time.time())}',
             'url': 'https://example.com',
-            'content': 'Total Vacancy: 100 Posts. Eligibility: Graduate. Apply at https://example.gov.in'
+            'content': 'Total Vacancy: 100 Posts. Eligibility: Graduate. Last Date: 31-12-2026. Apply at https://example.gov.in'
         })
     
     processed = process_with_gemini(all_raw_jobs)
