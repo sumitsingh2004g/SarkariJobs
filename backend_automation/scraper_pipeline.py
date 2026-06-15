@@ -102,6 +102,7 @@ def scrape_freejobalert_index() -> List[Dict[str, str]]:
     
     try:
         resp = requests.get(base_url, impersonate="chrome", timeout=20)
+        print(f"FreeJobAlert response: {resp.status_code}, len={len(resp.text)}")
         polite_delay()
         
         if resp.status_code != 200:
@@ -141,6 +142,7 @@ def scrape_sarkariresult_index() -> List[Dict[str, str]]:
     
     try:
         resp = requests.get(base_url, impersonate="chrome", timeout=20)
+        print(f"SarkariResult response: {resp.status_code}, len={len(resp.text)}")
         polite_delay()
         
         if resp.status_code != 200:
