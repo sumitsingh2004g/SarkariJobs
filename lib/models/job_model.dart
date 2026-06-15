@@ -22,11 +22,28 @@ class Job {
   });
 
   factory Job.fromJson(Map<String, dynamic> json) {
-    String parseDate(String? dateStr) {
+    DateTime parseDateToIso(String? dateStr) {
       if (dateStr == null || dateStr.isEmpty) {
-        return DateTime.now().add(Duration(days: 365)).toIso8601String().split('T')[0];
+        return DateTime.now().add(Duration(days: 365));
       }
-      return dateStr;
+      
+      if (dateStr.contains('/')) {
+        final parts = dateStr.split('/');
+        if (parts.length == 3) {
+          return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+        }
+      }
+      
+      if (dateStr.contains('-')) {
+        final parts = dateStr.split('-');
+        if (parts.length == 3 && parts[0].length == 4) {
+          return DateTime.parse(dateStr);
+        } else if (parts.length == 3) {
+          return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+        }
+      }
+      
+      return DateTime.tryParse(dateStr) ?? DateTime.now().add(Duration(days: 365));
     }
 
     return Job(
@@ -35,9 +52,9 @@ class Job {
       organization: json['organization'] as String? ?? 'Other',
       totalVacancies: json['total_vacancies'] as String? ?? 'Not specified',
       startDate: json['start_date'] != null
-          ? DateTime.tryParse(json['start_date'] as String)
+          ? parseDateToIso(json['start_date'] as String?)
           : null,
-      lastDate: DateTime.parse(parseDate(json['last_date'] as String?)),
+      lastDate: parseDateToIso(json['last_date'] as String?),
       feeDetails: json['fee_details'] as String? ?? 'As per official notification',
       eligibility: json['eligibility'] as String? ?? 'As per official notification',
       officialApplyLink: json['official_apply_link'] as String? ?? '',
