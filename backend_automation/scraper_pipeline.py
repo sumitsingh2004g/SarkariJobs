@@ -271,7 +271,12 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     print(f"Gemini error for {title[:30]}: {e}")
         
         govt_links = extract_govt_links(job.get('content', ''))
-        apply_link = data.get('apply_link') or (govt_links[0] if govt_links else '')
+        
+        apply_link = data.get('apply_link')
+        if not apply_link and govt_links:
+            apply_link = govt_links[0]
+        if not apply_link:
+            apply_link = f"https://www.google.com/search?q={title.replace(' ', '+')}+official+apply+link+site:gov.in"
         
         extracted_vacancies = data.get('total_vacancies')
         if not extracted_vacancies:
@@ -296,16 +301,25 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if start_match:
                 extracted_start_date = start_match.group(1).replace('/', '-')
         
+        final_last_date = extracted_last_date or '2026-12-31'
+        if '-' in final_last_date:
+            parts = final_last_date.split('-')
+            if len(parts[0]) == 4 and len(parts) == 3:
+                final_last_date = '-'.join(parts)
+            elif len(parts[0]) <= 2 and len(parts) == 3:
+                final_last_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+        
         results.append({
             'title': data.get('title') or title,
             'organization': normalize_organization(data.get('title') or title),
             'total_vacancies': str(extracted_vacancies or 'Not specified'),
             'start_date': extracted_start_date,
-            'last_date': extracted_last_date or '2026-12-31',
+            'last_date': final_last_date,
             'fee_details': str(data.get('application_fees') or 'As per official notification'),
             'eligibility': str(data.get('eligibility') or 'As per official notification'),
             'official_apply_link': apply_link or job.get('url', '')
         })
+        print(f"Processed: {title[:30]} -> vacancies={extracted_vacancies or 'Not specified'}, last_date={final_last_date}, apply={apply_link[:50] if apply_link else 'N/A'}...")
     
     return results
 
