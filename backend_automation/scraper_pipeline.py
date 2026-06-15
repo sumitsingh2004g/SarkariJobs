@@ -126,8 +126,12 @@ def scrape_freejobalert_index() -> List[Dict[str, str]]:
             full_url = href if href.startswith('http') else urljoin(base_url, href)
             href_lower = full_url.lower()
             
-            job_patterns = ['/202[4-9]', '/recruitment', '/vacancy', '/notification', '/online']
+            job_patterns = ['/202[4-9]', '/recruitment', '/vacancy', '/notification', '/online', '/2024', '/2025', '/2026', '/apply']
             if any(p in href_lower for p in job_patterns):
+                if full_url not in seen:
+                    seen.add(full_url)
+                    jobs.append({'url': full_url, 'text': txt})
+            elif '/sarkari-result/' in href_lower or re.search(r'/[\w\-]+-\d{4}/', href_lower):
                 if full_url not in seen:
                     seen.add(full_url)
                     jobs.append({'url': full_url, 'text': txt})
@@ -144,7 +148,12 @@ def scrape_sarkariresult_index() -> List[Dict[str, str]]:
     seen = set()
     
     try:
-        resp = requests.get(base_url, impersonate="chrome", timeout=20)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        resp = requests.get(base_url, impersonate="chrome", headers=headers, timeout=20)
         print(f"SarkariResult response: {resp.status_code}, len={len(resp.text)}")
         polite_delay()
         
@@ -169,7 +178,7 @@ def scrape_sarkariresult_index() -> List[Dict[str, str]]:
             full_url = href if href.startswith('http') else f'https://sarkariresult.com{href}'
             href_lower = full_url.lower()
             
-            if not re.search(r'/202[4-9]/', href_lower):
+            if not re.search(r'/(202[4-9]|upsssc|ups[cs]|rrb|ssc|bank|defence|nda|navy|army|railway|rpf)/', href_lower):
                 continue
             
             if full_url not in seen:
