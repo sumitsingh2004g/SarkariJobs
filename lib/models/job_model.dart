@@ -22,18 +22,25 @@ class Job {
   });
 
   factory Job.fromJson(Map<String, dynamic> json) {
+    String parseDate(String? dateStr) {
+      if (dateStr == null || dateStr.isEmpty) {
+        return DateTime.now().add(Duration(days: 365)).toIso8601String().split('T')[0];
+      }
+      return dateStr;
+    }
+
     return Job(
       id: json['id'] as int?,
-      title: json['title'] as String,
-      organization: json['organization'] as String,
-      totalVacancies: json['total_vacancies'] as String,
+      title: json['title'] as String? ?? 'Unknown',
+      organization: json['organization'] as String? ?? 'Other',
+      totalVacancies: json['total_vacancies'] as String? ?? 'Not specified',
       startDate: json['start_date'] != null
-          ? DateTime.parse(json['start_date'] as String)
+          ? DateTime.tryParse(json['start_date'] as String)
           : null,
-      lastDate: DateTime.parse(json['last_date'] as String),
-      feeDetails: json['fee_details'] as String,
-      eligibility: json['eligibility'] as String,
-      officialApplyLink: json['official_apply_link'] as String,
+      lastDate: DateTime.parse(parseDate(json['last_date'] as String?)),
+      feeDetails: json['fee_details'] as String? ?? 'As per official notification',
+      eligibility: json['eligibility'] as String? ?? 'As per official notification',
+      officialApplyLink: json['official_apply_link'] as String? ?? '',
     );
   }
 

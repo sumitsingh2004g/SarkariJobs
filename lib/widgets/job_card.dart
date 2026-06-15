@@ -14,8 +14,14 @@ class JobCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    DateTime? parsedLastDate;
+    try {
+      parsedLastDate = job.lastDate;
+    } catch (e) {
+      parsedLastDate = DateTime.now().add(Duration(days: 365));
+    }
     final dateFormat = DateFormat('dd-MM-yyyy');
-    final String formattedLastDate = dateFormat.format(job.lastDate);
+    final String formattedLastDate = dateFormat.format(parsedLastDate);
 
     return InkWell(
       onTap: onTap,

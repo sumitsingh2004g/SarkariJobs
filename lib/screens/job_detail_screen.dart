@@ -28,10 +28,18 @@ class JobDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    DateTime? parsedStartDate;
+    DateTime? parsedLastDate;
+    try {
+      parsedLastDate = job.lastDate;
+    } catch (e) {
+      parsedLastDate = DateTime.now().add(Duration(days: 365));
+    }
+    
     final dateFormat = DateFormat('dd-MM-yyyy');
     final String startDateStr =
         job.startDate != null ? dateFormat.format(job.startDate!) : 'Not specified';
-    final String lastDateStr = dateFormat.format(job.lastDate);
+    final String lastDateStr = dateFormat.format(parsedLastDate);
 
     return Scaffold(
       backgroundColor: Colors.white,
