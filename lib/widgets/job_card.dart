@@ -88,6 +88,18 @@ class JobCard extends StatelessWidget {
                   ),
                 ),
               ),
+              if (job.officialApplyLink.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Apply: ${job.officialApplyLink}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF1A237E),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ],
           ),
         ),
