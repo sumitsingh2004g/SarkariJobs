@@ -327,7 +327,17 @@ def main():
         })
     
     processed = process_with_gemini(all_raw_jobs)
-    inserted_count = sum(1 for j in processed if insert_job(j))
+    inserted_count = 0
+    for j in processed:
+        try:
+            supabase.table('jobs').insert(j).execute()
+            print(f"Inserted: {j.get('title')}")
+            inserted_count += 1
+        except Exception as e:
+            if 'duplicate key' in str(e).lower():
+                print(f"Duplicate skipped: {j.get('title')}")
+            else:
+                print(f"Insert error: {e}")
     print(f"Inserted {inserted_count} jobs")
     cleanup_expired()
     print('Pipeline complete.')
