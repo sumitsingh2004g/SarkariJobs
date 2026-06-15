@@ -173,7 +173,7 @@ class JobDetailScreen extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            value,
+            value.isEmpty ? 'Not specified' : value,
             style: const TextStyle(
               fontSize: 16,
               color: Color(0xFF1A237E),
