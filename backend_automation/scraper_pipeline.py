@@ -373,14 +373,11 @@ def main():
     inserted_count = 0
     for j in processed:
         try:
-            supabase.table('jobs').insert(j).execute()
-            print(f"Inserted: {j.get('title')}")
+            supabase.table('jobs').upsert(j).execute()
+            print(f"Upserted: {j.get('title')}")
             inserted_count += 1
         except Exception as e:
-            if 'duplicate key' in str(e).lower():
-                print(f"Duplicate skipped: {j.get('title')}")
-            else:
-                print(f"Insert error: {e}")
+            print(f"Insert error: {e}")
     print(f"Inserted {inserted_count} jobs")
     cleanup_expired()
     print('Pipeline complete.')
