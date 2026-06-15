@@ -273,12 +273,35 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         govt_links = extract_govt_links(job.get('content', ''))
         apply_link = data.get('apply_link') or (govt_links[0] if govt_links else '')
         
+        extracted_vacancies = data.get('total_vacancies')
+        if not extracted_vacancies:
+            vac_match = re.search(r'(?:total\s*vacanc(?:y|ies)?|posts?|recruitment)\s*[:\-]?\s*(\d[\d,\s]+)', job.get('content', ''), re.IGNORECASE)
+            extracted_vacancies = vac_match.group(1).replace(',', '').strip() if vac_match else None
+        
+        extracted_last_date = data.get('last_date')
+        if not extracted_last_date:
+            date_patterns = [
+                r'(?:last\s*date|deadline|applying\s*upto)[:\-]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})',
+                r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})',
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, job.get('content', ''), re.IGNORECASE)
+                if date_match:
+                    extracted_last_date = date_match.group(1).replace('/', '-')
+                    break
+        
+        extracted_start_date = data.get('start_date')
+        if not extracted_start_date:
+            start_match = re.search(r'(?:start\s*date|application\s*start)[:\-]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})', job.get('content', ''), re.IGNORECASE)
+            if start_match:
+                extracted_start_date = start_match.group(1).replace('/', '-')
+        
         results.append({
             'title': data.get('title') or title,
             'organization': normalize_organization(data.get('title') or title),
-            'total_vacancies': str(data.get('total_vacancies') or 'Not specified'),
-            'start_date': data.get('start_date'),
-            'last_date': data.get('last_date') or '2026-12-31',
+            'total_vacancies': str(extracted_vacancies or 'Not specified'),
+            'start_date': extracted_start_date,
+            'last_date': extracted_last_date or '2026-12-31',
             'fee_details': str(data.get('application_fees') or 'As per official notification'),
             'eligibility': str(data.get('eligibility') or 'As per official notification'),
             'official_apply_link': apply_link or job.get('url', '')
