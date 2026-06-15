@@ -100,6 +100,30 @@ class JobDetailScreen extends StatelessWidget {
             _buildDetailRow('Application Fees', job.feeDetails),
             _buildDetailRow('Start Date', startDateStr),
             _buildDetailRow('Last Date', lastDateStr),
+            if (job.officialApplyLink.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () => _launchUrl(context),
+                child: Row(
+                  children: [
+                    const Icon(Icons.link, size: 16, color: Color(0xFF1A237E)),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'Official Website',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF1A237E),
+                          decoration: TextDecoration.underline,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
           ],
         ),
