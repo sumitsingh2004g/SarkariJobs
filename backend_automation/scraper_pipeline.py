@@ -230,10 +230,11 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     
     instruction = (
         "You are an expert data parser. Do NOT use placeholder dates like 31-12-2026 or fallback website domains like sarkariresult.com. "
+        "Do NOT use the current year (2026) as a placeholder for vacancies or dates. "
         "Extract ONLY from the provided text. Return valid JSON with these exact fields:\n\n"
         "{\n"
         '  "title": "Actual job title (e.g., SSC MTS 2024, Bank Clerk Recruitment)",\n'
-        '  "total_vacancies": "Exact number (e.g., 1400, 1607, 457) or null if not found",\n'
+        '  "total_vacancies": "Exact number (e.g., 1400, 1607, 457) or null if not found. If you cannot find explicit numerical value, output null, NOT a year.",\n'
         '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If official government link present in text, extract it",\n'
         '  "start_date": "Application start date or null",\n'
         '  "last_date": "Application deadline date or null",\n'
@@ -242,9 +243,9 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "}\n\n"
         "Rules:\n"
         "- Skip if title contains: FreeJobAlert, SarkariResult, Download App\n"
-        "- Extract vacancy count from 'Total Vacancy', 'Vacancy', 'Posts', or table cells\n"
+        "- Extract vacancy count from 'Total Vacancy', 'Vacancy', 'Posts', or table cells only. Do NOT hallucinate vacancy numbers.\n"
         "- Find apply_link in .gov.in/.nic.in URLs from page text - use REAL official links only\n"
-        "- Dates: Use format as written in notification (DD/MM/YYYY or Month DD, YYYY)\n"
+        "- Dates: Use format as written in notification (DD/MM/YYYY or Month DD, YYYY). Do NOT invent dates.\n"
         "- Set fields to null if not explicitly found (NOT 'Not specified')\n"
     )
     
@@ -282,15 +283,24 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         govt_links = extract_govt_links(job.get('content', ''))
         
         apply_link = data.get('apply_link')
+        if apply_link and not apply_link.startswith(('http://', 'https://')):
+            apply_link = None
         if not apply_link and govt_links:
             apply_link = govt_links[0]
         if not apply_link:
-            apply_link = None
+            apply_link = job.get('url', '')
         
         extracted_vacancies = data.get('total_vacancies')
         if not extracted_vacancies:
-            vac_match = re.search(r'(?:total\s*vacanc(?:y|ies)?|posts?|recruitment)\s*[:\-]?\s*(\d[\d,\s]+)', job.get('content', ''), re.IGNORECASE)
-            extracted_vacancies = vac_match.group(1).replace(',', '').strip() if vac_match else None
+            vac_match = re.search(r'(?:total\s*vacanc(?:y|ies)?|posts?)[:\-]?\s*(\d{1,2}(?:[,]\d{3})*)', job.get('content', ''), re.IGNORECASE)
+            if vac_match:
+                vacancy_str = vac_match.group(1).replace(',', '').strip()
+                try:
+                    vac_num = int(vacancy_str)
+                    if 1 <= vac_num <= 50000:
+                        extracted_vacancies = vacancy_str
+                except ValueError:
+                    pass
         
         extracted_last_date = data.get('last_date')
         if not extracted_last_date:
@@ -326,7 +336,7 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             'last_date': final_last_date,
             'fee_details': str(data.get('application_fees') or 'As per official notification'),
             'eligibility': str(data.get('eligibility') or 'As per official notification'),
-            'official_apply_link': apply_link or job.get('url', '')
+            'official_apply_link': apply_link
         })
         print(f"Processed: {title[:30]} -> vacancies={extracted_vacancies or 'Not specified'}, last_date={final_last_date}, apply={apply_link[:50] if apply_link else 'N/A'}...")
     
