@@ -83,6 +83,11 @@ def is_excluded_title(title: str) -> bool:
         return True
     return False
 
+def is_valid_url(url: Optional[str]) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    return url.startswith(('http://', 'https://'))
+
 def extract_govt_links(text: str) -> List[str]:
     govt_links = []
     pattern1 = r'https?://[^\s\'"<>]+?\.(?:gov\.in|nic\.in)[^\s\'"<>]*'
@@ -234,8 +239,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "Extract ONLY from the provided text. Return valid JSON with these exact fields:\n\n"
         "{\n"
         '  "title": "Actual job title (e.g., SSC MTS 2024, Bank Clerk Recruitment)",\n'
-        '  "total_vacancies": "Exact number (e.g., 1400, 1607, 457) or null if not found. If you cannot find explicit numerical value, output null, NOT a year.",\n'
-        '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If official government link present in text, extract it",\n'
+        '  "total_vacancies": "Exact number (e.g., 1400, 1607, 457) or \"Not specified\" if not found. If you cannot find explicit numerical value, output \"Not specified\". Do NOT use the current year (2026) as a placeholder for vacancies or dates.",\n'
+        '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If official government link present in text, extract it. Otherwise output null.",\n'
         '  "start_date": "Application start date or null",\n'
         '  "last_date": "Application deadline date or null",\n'
         '  "application_fees": "Fee amount (e.g., Rs. 100/-, 125) or null",\n'
@@ -246,7 +251,6 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "- Extract vacancy count from 'Total Vacancy', 'Vacancy', 'Posts', or table cells only. Do NOT hallucinate vacancy numbers.\n"
         "- Find apply_link in .gov.in/.nic.in URLs from page text - use REAL official links only\n"
         "- Dates: Use format as written in notification (DD/MM/YYYY or Month DD, YYYY). Do NOT invent dates.\n"
-        "- Set fields to null if not explicitly found (NOT 'Not specified')\n"
     )
     
     results = []
@@ -283,12 +287,14 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         govt_links = extract_govt_links(job.get('content', ''))
         
         apply_link = data.get('apply_link')
-        if apply_link and not apply_link.startswith(('http://', 'https://')):
+        if apply_link and not is_valid_url(apply_link):
             apply_link = None
-        if not apply_link and govt_links:
-            apply_link = govt_links[0]
+
         if not apply_link:
-            apply_link = job.get('url', '')
+            for candidate in govt_links + [job.get('url', '')]:
+                if is_valid_url(candidate):
+                    apply_link = candidate
+                    break
         
         extracted_vacancies = data.get('total_vacancies')
         if not extracted_vacancies:
@@ -301,6 +307,8 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                         extracted_vacancies = vacancy_str
                 except ValueError:
                     pass
+            else:
+                extracted_vacancies = 'Not specified'
         
         extracted_last_date = data.get('last_date')
         if not extracted_last_date:
