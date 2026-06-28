@@ -239,7 +239,7 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "Extract ONLY from the provided text. Return valid JSON with these exact fields:\n\n"
         "{\n"
         '  "title": "Actual job title (e.g., SSC MTS 2024, Bank Clerk Recruitment)",\n'
-        '  "total_vacancies": "Exact number (e.g., 1400, 1607, 457) or \"Not specified\" if not found. If you cannot find explicit numerical value, output \"Not specified\". Do NOT use the current year (2026) as a placeholder for vacancies or dates.",\n'
+        '  "total_vacancies": "Exact number (e.g., 3000, 15, 6565) or \"Not specified\" if not found. Do NOT extract the year 2026 from the post title or body into the `total_vacancies` field. Vacancy must be a clear number. If no clear vacancy number is present in the main details table, strictly default to \"Not specified\".",\n'
         '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If official government link present in text, extract it. Otherwise output null.",\n'
         '  "start_date": "Application start date or null",\n'
         '  "last_date": "Application deadline date or null",\n'
@@ -291,10 +291,13 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             apply_link = None
 
         if not apply_link:
+            apply_link = None
             for candidate in govt_links + [job.get('url', '')]:
                 if is_valid_url(candidate):
                     apply_link = candidate
                     break
+            if not apply_link:
+                apply_link = None
         
         extracted_vacancies = data.get('total_vacancies')
         if not extracted_vacancies:
