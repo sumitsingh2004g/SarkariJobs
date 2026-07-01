@@ -97,7 +97,8 @@ def extract_govt_links(text: str) -> List[str]:
         for m in matches:
             cleaned = m.rstrip('.,;:')
             if cleaned and len(cleaned) > 20:
-                govt_links.append(cleaned)
+                if 'google.com' not in cleaned.lower() and 'sarkariresult' not in cleaned.lower() and 'freejobalert' not in cleaned.lower():
+                    govt_links.append(cleaned)
     return list(dict.fromkeys(govt_links))[:3]
 
 def scrape_freejobalert_index() -> List[Dict[str, str]]:
@@ -234,13 +235,13 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return []
     
     instruction = (
-        "You are an expert data parser. Do NOT use placeholder dates like 31-12-2026 or fallback website domains like sarkariresult.com. "
+        "You are an expert data parser. Do NOT use placeholder dates like 31-12-2026. "
         "Do NOT use the current year (2026) as a placeholder for vacancies or dates. "
         "Extract ONLY from the provided text. Return valid JSON with these exact fields:\n\n"
         "{\n"
         '  "title": "Actual job title (e.g., SSC MTS 2024, Bank Clerk Recruitment)",\n'
-        '  "total_vacancies": "Exact number (e.g., 3000, 15, 6565) or \"Not specified\" if not found. Do NOT extract the year 2026 from the post title or body into the `total_vacancies` field. Vacancy must be a clear number. If no clear vacancy number is present in the main details table, strictly default to \"Not specified\".",\n'
-        '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If official government link present in text, extract it. Otherwise output null.",\n'
+        '  "total_vacancies": "Exact integer number only (e.g., 3000, 15, 6565) or \"Not specified\" if not found. Do NOT extract years like 2026, 2025, or any year-like number from the post title or body into the `total_vacancies` field. If a number looks like a year or cannot be strictly verified as a pure integer vacancy count, strictly output \"Not specified\". If no clear vacancy number is present in the main details table, strictly output \"Not specified\".",\n'
+        '  "apply_link": "Official government website link ending in .gov.in or .nic.in ONLY. If a direct official government link is present in text, extract it. Otherwise output null. Absolutely DO NOT generate any google search links or use search queries.",\n'
         '  "start_date": "Application start date or null",\n'
         '  "last_date": "Application deadline date or null",\n'
         '  "application_fees": "Fee amount (e.g., Rs. 100/-, 125) or null",\n'
@@ -249,13 +250,14 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "Rules:\n"
         "- Skip if title contains: FreeJobAlert, SarkariResult, Download App\n"
         "- Extract vacancy count from 'Total Vacancy', 'Vacancy', 'Posts', or table cells only. Do NOT hallucinate vacancy numbers.\n"
-        "- Find apply_link in .gov.in/.nic.in URLs from page text - use REAL official links only\n"
+        "- Find apply_link in .gov.in/.nic.in URLs from page text - use REAL official links only. NEVER generate google.com links.\n"
         "- Dates: Use format as written in notification (DD/MM/YYYY or Month DD, YYYY). Do NOT invent dates.\n"
     )
     
     results = []
     for job in raw_jobs:
         title = job.get('text', '')
+        source_url = job.get('url', '')
         
         if is_excluded_title(title):
             print(f"Skipping excluded title: {title[:50]}")
@@ -284,30 +286,51 @@ def process_with_gemini(raw_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 else:
                     print(f"Gemini error for {title[:30]}: {e}")
         
-        govt_links = extract_govt_links(job.get('content', ''))
-        
+        # LINK DETERMINATION: Clear out any hallucinated text or search queries completely
         apply_link = data.get('apply_link')
-        if apply_link and not is_valid_url(apply_link):
+        
+        # Clear fake strings or search queries
+        if apply_link and ('google.com' in apply_link.lower() or 'search?q=' in apply_link.lower()):
+            apply_link = None
+            
+        if apply_link and (not apply_link.startswith("http://") and not apply_link.startswith("https://")):
             apply_link = None
 
+        # If Gemini didn't find an official link, try regex parsing for any .gov.in links in the page
         if not apply_link:
-            apply_link = None
-            for candidate in govt_links + [job.get('url', '')]:
-                if is_valid_url(candidate):
-                    apply_link = candidate
-                    break
-            if not apply_link:
-                apply_link = None
+            govt_links = extract_govt_links(job.get('content', ''))
+            if govt_links:
+                apply_link = govt_links[0]
+
+        # ULTIMATE FALLBACK: If still no link or it's invalid, strictly default to the source deep-page URL
+        if not apply_link or not is_valid_url(apply_link):
+            apply_link = source_url
         
         extracted_vacancies = data.get('total_vacancies')
-        if not extracted_vacancies:
+        if extracted_vacancies and extracted_vacancies != 'Not specified':
+            try:
+                clean_vac = str(extracted_vacancies).replace(',', '').strip()
+                if not clean_vac.isdigit():
+                    extracted_vacancies = 'Not specified'
+                else:
+                    vac_num = int(clean_vac)
+                    if not (1 <= vac_num <= 50000):
+                        extracted_vacancies = 'Not specified'
+                    elif 2000 <= vac_num <= 2100:  # Stops "2026" hallucination filter
+                        extracted_vacancies = 'Not specified'
+            except (ValueError, AttributeError):
+                extracted_vacancies = 'Not specified'
+        
+        if not extracted_vacancies or extracted_vacancies == 'Not specified':
             vac_match = re.search(r'(?:total\s*vacanc(?:y|ies)?|posts?)[:\-]?\s*(\d{1,2}(?:[,]\d{3})*)', job.get('content', ''), re.IGNORECASE)
             if vac_match:
                 vacancy_str = vac_match.group(1).replace(',', '').strip()
                 try:
                     vac_num = int(vacancy_str)
-                    if 1 <= vac_num <= 50000:
+                    if 1 <= vac_num <= 50000 and not (2020 <= vac_num <= 2030):
                         extracted_vacancies = vacancy_str
+                    else:
+                        extracted_vacancies = 'Not specified'
                 except ValueError:
                     pass
             else:
@@ -372,7 +395,7 @@ def cleanup_expired():
 def main():
     print('Starting Deep Scraper Pipeline...')
     
-    # FORCE TRUNCATE: Clear all existing stale data before fresh crawl
+    # FORCE TRUNCATE: Clear all existing stale data before fresh crawl to avoid lingering bad links
     try:
         supabase.table('jobs').delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
         print("Cleared existing jobs table data")
